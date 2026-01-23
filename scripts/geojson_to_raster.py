@@ -28,7 +28,7 @@ from env.world_state import WorldState
 from env.geo.street_network import StreetNetworkCollection
 from env.geo.business_type import BusinessTypeCollection
 from env.representation.raster_obs import RasterObservation
-from env.representation.visualization import visualize_raster_channels, visualize_rgb_composite
+from env.representation.visualization import visualize_raster_channels
 
 
 def geojson_to_spaceunit_collection(gdf: gpd.GeoDataFrame) -> SpaceUnitCollection:
@@ -86,15 +86,38 @@ def geojson_to_spaceunit_collection(gdf: gpd.GeoDataFrame) -> SpaceUnitCollectio
                 enabled=enabled
             )
             
-            # 如果有flow_prediction字段，设置它
-            if 'flow_prediction' in gdf.columns:
-                unit_gdf.loc[unit_gdf.index[0], 'flow_prediction'] = row.get('flow_prediction', 0.0)
+            # 只有public_space类型的单元才设置flow_prediction
+            # shop单元不应该有flow_prediction属性（必须设为0）
+            if unit_type == 'public_space' and 'flow_prediction' in gdf.columns:
+                # public_space单元：使用GeoJSON中的值，如果没有则设为0
+                flow_val = row.get('flow_prediction', 0.0)
+                unit_gdf.loc[unit_gdf.index[0], 'flow_prediction'] = float(flow_val) if flow_val is not None else 0.0
+            else:
+                # 确保shop和其他非public_space单元没有flow_prediction（强制设为0）
+                # 无论GeoJSON中是否有值，都强制设为0
+                unit_gdf.loc[unit_gdf.index[0], 'flow_prediction'] = 0.0
+            
+            # 双重检查：确保shop单元的flow_prediction为0
+            if unit_type == 'shop':
+                if unit_gdf.loc[unit_gdf.index[0], 'flow_prediction'] != 0.0:
+                    unit_gdf.loc[unit_gdf.index[0], 'flow_prediction'] = 0.0
             
             collection.add_space_unit(unit_gdf)
             
         except Exception as e:
             print(f"处理要素 {idx} 失败: {e}")
             continue
+    
+    # 最终验证：确保所有shop单元的flow_prediction都为0
+    all_units = collection.get_all_space_units()
+    shop_mask = all_units['unit_type'] == 'shop'
+    if shop_mask.any():
+        shop_flow_values = all_units.loc[shop_mask, 'flow_prediction']
+        if not (shop_flow_values == 0.0).all():
+            # 强制设置为0
+            all_units.loc[shop_mask, 'flow_prediction'] = 0.0
+            # 更新collection
+            collection._SpaceUnitCollection__unit_gdf = all_units
     
     return collection
 
@@ -244,11 +267,6 @@ def main():
             # 可视化各通道
             vis_path = output_dir / 'raster_channels.png'
             visualize_raster_channels(obs, channels, str(vis_path))
-            
-            # RGB合成图
-            if obs.shape[0] >= 3:
-                rgb_path = output_dir / 'raster_rgb_composite.png'
-                visualize_rgb_composite(obs, channels, str(rgb_path))
         
         print(f"\n完成！输出目录: {output_dir}")
         

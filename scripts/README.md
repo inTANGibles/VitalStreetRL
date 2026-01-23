@@ -74,7 +74,6 @@ GeoJSON文件应包含以下字段：
 脚本会在输出目录生成以下文件：
 
 - `raster_channels.png`: 各通道的可视化图像
-- `raster_rgb_composite.png`: RGB合成图（如果至少有3个通道）
 - `raster_observation.npy`: NumPy数组（如果使用 `--save-numpy`）
 
 ### 示例

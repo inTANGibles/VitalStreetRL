@@ -25,11 +25,22 @@ def main():
     
     if args.mode == 'train':
         # 训练模式
-        logger = EpisodeLogger(log_dir=config['train']['checkpoint_dir'].replace('checkpoints', 'logs'))
-        trainer = PPOTrainer(config['train'])
-        metrics = trainer.train(
-            n_episodes=config['train']['n_episodes'],
-            log_interval=config['train']['log_interval']
+        train_config = config['train']
+        
+        # 合并env配置（如果需要）
+        if 'env' in config:
+            train_config['env'] = config['env']
+        
+        trainer = PPOTrainer(train_config)
+        
+        # 计算总步数（从episode数估算，或直接使用timesteps）
+        n_episodes = train_config.get('n_episodes', 1000)
+        # 假设平均每个episode 100步
+        total_timesteps = n_episodes * 100
+        
+        trainer.train(
+            total_timesteps=total_timesteps,
+            log_interval=train_config.get('log_interval', 10)
         )
         print("训练完成！")
     

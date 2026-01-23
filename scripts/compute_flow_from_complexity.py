@@ -209,6 +209,7 @@ def compute_flow_from_complexity(
 ) -> SpaceUnitCollection:
     """
     基于周边图块功能复杂度计算flow_prediction
+    只针对public_space类型的单元（walkable_place）
     
     Args:
         collection: SpaceUnitCollection对象
@@ -222,16 +223,30 @@ def compute_flow_from_complexity(
     Returns:
         collection: 更新后的SpaceUnitCollection（原地修改）
     """
-    all_units = collection.get_all_space_units()
+    # 直接访问内部 GeoDataFrame，确保修改生效
+    all_units = collection._SpaceUnitCollection__unit_gdf
     
     if len(all_units) == 0:
         print("警告: 没有空间单元")
         return collection
     
-    # 计算每个单元的复杂度
-    complexity_scores = []
+    # 首先确保所有shop单元的flow_prediction都为0（无论之前的状态如何）
+    shop_mask = all_units['unit_type'] == 'shop'
+    if shop_mask.any():
+        all_units.loc[shop_mask, 'flow_prediction'] = 0.0
     
-    for idx, unit in all_units.iterrows():
+    # 只处理public_space类型的单元
+    public_space_units = all_units[all_units['unit_type'] == 'public_space']
+    
+    if len(public_space_units) == 0:
+        print("警告: 没有public_space类型的单元")
+        return collection
+    
+    # 计算每个public_space单元的复杂度
+    complexity_scores = []
+    public_space_indices = []
+    
+    for idx, unit in public_space_units.iterrows():
         complexity = compute_surrounding_complexity(
             target_unit=unit,
             all_units=all_units,
@@ -247,6 +262,7 @@ def compute_flow_from_complexity(
         )
         
         complexity_scores.append(score)
+        public_space_indices.append(idx)
     
     # 归一化到[0, 1]范围（可选）
     if normalize and len(complexity_scores) > 0:
@@ -259,12 +275,22 @@ def compute_flow_from_complexity(
         else:
             complexity_scores = np.zeros_like(scores_array)
     
-    # 更新flow_prediction
-    for idx, (unit_idx, score) in enumerate(zip(all_units.index, complexity_scores)):
-        all_units.loc[unit_idx, 'flow_prediction'] = base_flow + float(score)
+    # 只更新public_space单元的flow_prediction
+    for idx, score in zip(public_space_indices, complexity_scores):
+        all_units.loc[idx, 'flow_prediction'] = base_flow + float(score)
     
-    # 更新collection
-    collection._SpaceUnitCollection__unit_gdf = all_units
+    # 再次确保所有shop单元的flow_prediction都为0（双重保险）
+    # 使用 mask 直接修改，确保修改生效
+    shop_mask = all_units['unit_type'] == 'shop'
+    if shop_mask.any():
+        all_units.loc[shop_mask, 'flow_prediction'] = 0.0
+    
+    # 验证：确保所有shop单元的flow_prediction都为0
+    shop_flow_values = all_units.loc[shop_mask, 'flow_prediction'] if shop_mask.any() else []
+    if len(shop_flow_values) > 0 and not (shop_flow_values == 0.0).all():
+        print(f"警告: 仍有 {len(shop_flow_values[shop_flow_values != 0.0])} 个shop单元的flow_prediction不为0")
+        # 强制设置为0
+        all_units.loc[shop_mask, 'flow_prediction'] = 0.0
     
     return collection
 
