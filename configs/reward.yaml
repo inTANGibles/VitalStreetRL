@@ -1,0 +1,17 @@
+# 奖励配置
+reward:
+  # 权重
+  lambda_cost: 0.1  # 成本权重
+  mu_violation: 1.0  # 违规惩罚权重
+  
+  # 成本函数
+  cost:
+    demolish: 5000.0
+    connect: 2000.0
+    reduce_impedance: 1000.0
+    change_business: 3000.0
+  
+  # 违规惩罚
+  violation:
+    min_street_width: 50.0  # 每违反一次
+    protected_zone: 100.0  # 每违反一次
