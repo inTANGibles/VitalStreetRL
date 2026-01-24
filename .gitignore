@@ -20,11 +20,11 @@ wheels/
 .installed.cfg
 *.egg
 
-# 虚拟环境
-venv/
-env/
-ENV/
-.venv
+# # 虚拟环境
+# venv/
+# env/
+# ENV/
+# .venv
 
 # IDE
 .vscode/
@@ -40,12 +40,12 @@ checkpoints/
 *.pt
 *.ckpt
 
-# 数据文件
-data/
-*.h5
-*.hdf5
-*.pkl
-*.pickle
+# # 数据文件
+# data/
+# *.h5
+# *.hdf5
+# *.pkl
+# *.pickle
 
 # 测试覆盖率
 .coverage
