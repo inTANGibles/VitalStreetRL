@@ -183,10 +183,8 @@ class STGNNGraphBuilder:
                         # 相邻单元不在当前集合中，跳过
                         continue
         
-        # 2. 街道网络边（如果启用）
-        if self.use_street_edges and state.street_network:
-            # TODO: 从street_network构建边
-            # 这里需要根据street_network的实际结构来实现
+        # 2. 街道网络边（已移除street_network支持）
+        # 如果需要街道边，可以从space_units的空间关系推导
             pass
         
         # 转换为numpy数组

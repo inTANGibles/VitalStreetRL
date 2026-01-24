@@ -62,6 +62,9 @@ class VitalStreetEnv(gym.Env):
         # 注意：测试阶段可以先用mock数据
         self._init_components()
         
+        # 打印环境初始化信息
+        print(f"[环境初始化] 观测空间: {self.observation_space.shape}, 动作空间维度: {action_dims}")
+        
     def _init_components(self):
         """初始化环境组件"""
         env_config = self.config.get('env', {})
@@ -94,6 +97,10 @@ class VitalStreetEnv(gym.Env):
         # 历史记录（仅用于终止检查，精简：只存储reward）
         self.history = []  # List[float]: 最近N步的reward
         
+        # 用于控制打印频率
+        self.print_interval = 10  # 每N步打印一次
+        self.episode_reward_sum = 0.0  # 当前episode的累计奖励
+        
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
         """重置环境"""
         super().reset(seed=seed)
@@ -109,12 +116,10 @@ class VitalStreetEnv(gym.Env):
         except FileNotFoundError:
             # 如果文件不存在，使用默认状态（空状态）
             from env.geo.space_unit import SpaceUnitCollection
-            from env.geo.street_network import StreetNetworkCollection
             from env.geo.business_type import BusinessTypeCollection
             
             self.state = WorldState(
                 space_units=SpaceUnitCollection(),
-                street_network=StreetNetworkCollection(),
                 business_types=BusinessTypeCollection(),
                 graph=None,
                 budget=self.budget,
@@ -158,11 +163,17 @@ class VitalStreetEnv(gym.Env):
         
         # 重置历史记录（用于终止检查）
         self.history = []
+        self.episode_reward_sum = 0.0
         
         # 编码初始观测（自动填充到固定尺寸）
         obs = self.raster_obs.encode(self.state)
         
         self.step_count = 0
+        
+        # 打印episode开始信息
+        space_units_count = len(self.state.space_units.get_all_space_units())
+        print(f"[Episode {self.state.episode_id}] 开始 | 空间单元数: {space_units_count} | 预算: {self.budget:.0f}")
+        
         info = {
             'episode_id': self.state.episode_id,
             'step': self.step_count
@@ -186,6 +197,9 @@ class VitalStreetEnv(gym.Env):
             next_state=next_state
         )
         
+        # 累计episode奖励
+        self.episode_reward_sum += reward
+        
         # 4. 检查终止（history仅存储reward用于停滞检查）
         self.history.append(reward)
         # 保持history长度不超过stagnation_threshold
@@ -195,6 +209,22 @@ class VitalStreetEnv(gym.Env):
         
         done, reason = self.termination_checker.check(next_state, self.history)
         truncated = False
+        
+        # 定期打印步骤信息
+        step_idx = next_state.step_idx
+        if step_idx % self.print_interval == 0 or done:
+            action_type_str = action_obj.type.name if hasattr(action_obj.type, 'name') else str(action_obj.type)
+            reward_vitality = reward_terms.get('vitality', 0.0) if isinstance(reward_terms, dict) else 0.0
+            reward_cost = reward_terms.get('cost', 0.0) if isinstance(reward_terms, dict) else 0.0
+            reward_violation = reward_terms.get('violation', 0.0) if isinstance(reward_terms, dict) else 0.0
+            print(f"  Step {step_idx:3d} | 动作: {action_type_str:25s} | "
+                  f"奖励: {reward:7.3f} (活力:{reward_vitality:6.3f}, 成本:{reward_cost:6.3f}, 违规:{reward_violation:6.3f}) | "
+                  f"累计: {self.episode_reward_sum:7.3f}")
+        
+        # Episode结束时打印总结
+        if done:
+            print(f"[Episode {self.state.episode_id}] 结束 | 总步数: {step_idx} | "
+                  f"累计奖励: {self.episode_reward_sum:.3f} | 终止原因: {reason}")
         
         # 5. 编码观测（自动填充到固定尺寸）
         obs = self.raster_obs.encode(next_state)
@@ -218,21 +248,38 @@ class PPOTrainer:
         self.config = config
         self.ppo_config = config.get('ppo', {})
         
+        print("=" * 80)
+        print("[PPO训练器] 初始化中...")
+        
         # 创建环境
         def make_env():
             env = VitalStreetEnv(config)
             env = Monitor(env)  # 监控环境
             return env
         self.env = DummyVecEnv([make_env])
+        print(f"[PPO训练器] 环境创建完成")
         
         # 创建PPO模型（确保数值参数为正确的类型）
+        learning_rate = float(self.ppo_config.get('learning_rate', 3e-4))
+        n_steps = int(self.ppo_config.get('n_steps', 2048))
+        batch_size = int(self.ppo_config.get('batch_size', 64))
+        n_epochs = int(self.ppo_config.get('n_epochs', 4))
+        
+        print(f"[PPO训练器] 模型配置:")
+        print(f"  - 策略: CnnPolicy")
+        print(f"  - 学习率: {learning_rate}")
+        print(f"  - n_steps: {n_steps}")
+        print(f"  - batch_size: {batch_size}")
+        print(f"  - n_epochs: {n_epochs}")
+        print(f"  - 设备: {config.get('device', 'auto')}")
+        
         self.model = PPO(
             policy='CnnPolicy',  # CNN策略，适合图像观测
             env=self.env,
-            learning_rate=float(self.ppo_config.get('learning_rate', 3e-4)),
-            n_steps=int(self.ppo_config.get('n_steps', 2048)),  # 每次收集的步数
-            batch_size=int(self.ppo_config.get('batch_size', 64)),
-            n_epochs=int(self.ppo_config.get('n_epochs', 4)),
+            learning_rate=learning_rate,
+            n_steps=n_steps,  # 每次收集的步数
+            batch_size=batch_size,
+            n_epochs=n_epochs,
             gamma=float(self.ppo_config.get('gamma', 0.99)),
             gae_lambda=float(self.ppo_config.get('gae_lambda', 0.95)),
             clip_range=float(self.ppo_config.get('clip_epsilon', 0.2)),
@@ -247,6 +294,8 @@ class PPOTrainer:
         # 检查点目录
         self.checkpoint_dir = config.get('checkpoint_dir', './checkpoints')
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        print(f"[PPO训练器] 检查点目录: {self.checkpoint_dir}")
+        print("=" * 80)
     
     def train(self, total_timesteps: Optional[int] = None, log_interval: int = 10):
         """训练主循环"""
@@ -257,14 +306,20 @@ class PPOTrainer:
             total_timesteps = n_episodes * 100
         
         # 设置回调函数
+        save_interval = self.config.get('save_interval', 100)
         checkpoint_callback = CheckpointCallback(
-            save_freq=self.config.get('save_interval', 100) * 1000,  # 每N个episode保存
+            save_freq=save_interval * 1000,  # 每N个episode保存
             save_path=self.checkpoint_dir,
             name_prefix='ppo_model'
         )
         
         # 训练
-        print(f"开始训练，总步数: {total_timesteps}")
+        print("\n" + "=" * 80)
+        print(f"[训练开始] 总步数: {total_timesteps} | "
+              f"预计episode数: ~{total_timesteps // 20} | "
+              f"检查点保存间隔: 每 {save_interval}K 步")
+        print("=" * 80 + "\n")
+        
         self.model.learn(
             total_timesteps=total_timesteps,
             callback=checkpoint_callback,
@@ -275,7 +330,9 @@ class PPOTrainer:
         # 保存最终模型
         final_model_path = os.path.join(self.checkpoint_dir, 'ppo_final')
         self.model.save(final_model_path)
-        print(f"训练完成！模型已保存至: {final_model_path}")
+        print("\n" + "=" * 80)
+        print(f"[训练完成] 模型已保存至: {final_model_path}")
+        print("=" * 80)
     
     def save_checkpoint(self, path: str):
         """保存检查点"""

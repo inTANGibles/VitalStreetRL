@@ -25,7 +25,6 @@ if str(project_root) not in sys.path:
 
 from env.geo.space_unit import SpaceUnitCollection
 from env.world_state import WorldState
-from env.geo.street_network import StreetNetworkCollection
 from env.geo.business_type import BusinessTypeCollection
 from env.representation.raster_obs import RasterObservation
 from env.representation.visualization import visualize_raster_channels
@@ -194,12 +193,10 @@ def main():
             config = yaml.safe_load(f)
         
         # 创建WorldState
-        street_network = StreetNetworkCollection()
         business_types = BusinessTypeCollection()
         
         world_state = WorldState(
             space_units=collection,
-            street_network=street_network,
             business_types=business_types,
             graph=None,
             budget=config['env']['constraints']['max_budget'],

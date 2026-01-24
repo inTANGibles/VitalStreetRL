@@ -246,7 +246,18 @@ class SpaceUnitCollection:
     def add_space_unit(self, unit, return_uid: bool = True) -> Optional[uuid.UUID]:
         """添加空间单元"""
         if not self.__unit_gdf.empty:
-            self.__unit_gdf = gpd.pd.concat([self.__unit_gdf, unit], ignore_index=False)
+            # 排除全NA的列以避免FutureWarning
+            # 根据pandas建议，在concat之前排除空或全NA的列
+            def _drop_allna_columns(df):
+                """移除全NA的列"""
+                return df.loc[:, ~df.isna().all()]
+            
+            # 清理DataFrame，移除全NA的列
+            gdf_clean = _drop_allna_columns(self.__unit_gdf)
+            unit_clean = _drop_allna_columns(unit)
+            
+            # 执行concat（使用sort=False避免排序警告）
+            self.__unit_gdf = gpd.pd.concat([gdf_clean, unit_clean], ignore_index=False, sort=False)
         else:
             self.__unit_gdf = unit
         self.__uid = uuid.uuid4()

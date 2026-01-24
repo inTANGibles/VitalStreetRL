@@ -6,7 +6,6 @@ import numpy as np
 import geopandas as gpd
 import copy
 from .geo.space_unit import SpaceUnitCollection
-from .geo.street_network import StreetNetworkCollection
 from .geo.business_type import BusinessTypeCollection
 
 
@@ -15,10 +14,9 @@ class WorldState:
     """环境状态表示"""
     # 空间对象集合（核心数据结构）
     space_units: SpaceUnitCollection      # 空间单元集合（核心操作对象）
-    street_network: StreetNetworkCollection  # 街道网络集合
     business_types: BusinessTypeCollection  # 业态类型集合
     
-    # 图结构（从space_units和street_network构建）
+    # 图结构（从space_units构建）
     graph: Any  # NetworkX Graph 或自定义图结构
     
     # 约束与预算
@@ -68,16 +66,12 @@ class WorldState:
         
         space_units = geojson_to_spaceunit_collection(gdf)
         
-        # 初始化StreetNetworkCollection（暂时为空，后续可以从GeoJSON中加载）
-        street_network = StreetNetworkCollection()
-        
         # 初始化BusinessTypeCollection（使用默认类型）
         business_types = BusinessTypeCollection()
         
         # 默认约束
         if constraints is None:
             constraints = {
-                'min_street_width': 3.0,
                 'protected_zones': [],
                 'max_budget': budget
             }
@@ -85,7 +79,6 @@ class WorldState:
         # 创建WorldState
         state = cls(
             space_units=space_units,
-            street_network=street_network,
             business_types=business_types,
             graph=None,  # 图结构延迟构建
             budget=budget,
@@ -112,10 +105,6 @@ class WorldState:
             # 将拷贝的GeoDataFrame设置到新的collection中
             copied_space_units._SpaceUnitCollection__unit_gdf = copied_gdf
         
-        # 深拷贝StreetNetworkCollection（暂时简单处理，后续可以完善）
-        copied_street_network = StreetNetworkCollection()
-        # TODO: 如果StreetNetworkCollection有数据，也需要深拷贝
-        
         # BusinessTypeCollection通常是只读的，可以直接引用或浅拷贝
         # 但为了安全，我们创建一个新的实例（它会重新初始化默认类型）
         copied_business_types = BusinessTypeCollection()
@@ -126,7 +115,6 @@ class WorldState:
         # 创建新的WorldState
         copied_state = WorldState(
             space_units=copied_space_units,
-            street_network=copied_street_network,
             business_types=copied_business_types,
             graph=None,  # 图结构需要重新构建
             budget=self.budget,
@@ -139,14 +127,8 @@ class WorldState:
     
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典"""
-        street_network_dict = {}
-        street_gdf = self.street_network.get_all_streets()
-        if not street_gdf.empty:
-            street_network_dict = street_gdf.to_dict()
-        
         return {
             'space_units': self.space_units.get_all_space_units().to_dict(),
-            'street_network': street_network_dict,
             'budget': self.budget,
             'constraints': self.constraints,
             'step_idx': self.step_idx,
@@ -156,12 +138,12 @@ class WorldState:
     def get_graph(self) -> Any:
         """获取或构建图结构"""
         if self.graph is None:
-            # 从space_units和street_network构建图
+            # 从space_units构建图
             self.graph = self._build_graph()
         return self.graph
     
     def _build_graph(self) -> Any:
         """构建图结构（用于STGNN和RL观测）"""
         # TODO: 实现图构建逻辑
-        # 可以结合street_network的get_network_graph()和space_units的空间关系
+        # 基于space_units的空间关系构建图
         pass
