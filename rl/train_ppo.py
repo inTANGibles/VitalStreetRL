@@ -43,6 +43,15 @@ class VitalStreetEnv(gym.Env):
         # 动作空间：使用真实的ActionSpace定义
         action_config = config.get('env', {}).get('action_space', {})
         
+        # 预先检测单元数量（从geojson文件）
+        self._detect_unit_count(config)
+        
+        # 更新action_config：使用检测到的单元数量和固定的business_types=8
+        if not hasattr(self, 'detected_max_total_units'):
+            self.detected_max_total_units = action_config.get('max_total_units', 120)
+        action_config['max_total_units'] = self.detected_max_total_units
+        action_config['max_business_types'] = 8  # 固定为8（对应BusinessCategory的8个枚举值）
+        
         # 创建ActionSpace实例以获取正确的动作维度
         action_space_manager = ActionSpace(action_config)
         action_dims = action_space_manager.get_action_dim()
@@ -64,7 +73,45 @@ class VitalStreetEnv(gym.Env):
         
         # 打印环境初始化信息
         print(f"[环境初始化] 观测空间: {self.observation_space.shape}, 动作空间维度: {action_dims}")
+        print(f"[环境初始化] 检测到的单元数量: {self.detected_max_total_units}, max_business_types: 8")
         
+    def _detect_unit_count(self, config: Dict[str, Any]):
+        """从geojson文件检测单元数量"""
+        env_config = config.get('env', {})
+        geojson_path = env_config.get('initial_state', {}).get('geojson_path', 'data/0123_2.geojson')
+        
+        try:
+            # 尝试加载geojson文件并检测单元数量
+            import geopandas as gpd
+            
+            geojson_path = Path(geojson_path)
+            if geojson_path.exists():
+                # 读取GeoJSON文件
+                gdf = gpd.read_file(geojson_path)
+                
+                # 转换为SpaceUnitCollection以获取实际单元数量
+                import sys
+                project_root = Path(__file__).resolve().parent.parent
+                if str(project_root) not in sys.path:
+                    sys.path.insert(0, str(project_root))
+                
+                from scripts.geojson_to_raster import geojson_to_spaceunit_collection
+                collection = geojson_to_spaceunit_collection(gdf)
+                all_units = collection.get_all_space_units()
+                
+                # 直接使用检测到的单元数量
+                self.detected_max_total_units = len(all_units)
+                
+                print(f"[单元检测] 从 {geojson_path} 检测到 {self.detected_max_total_units} 个单元，设置 max_total_units = {self.detected_max_total_units}")
+            else:
+                # 文件不存在，使用默认值
+                self.detected_max_total_units = env_config.get('action_space', {}).get('max_total_units', 120)
+                print(f"[单元检测] GeoJSON文件不存在: {geojson_path}，使用默认值 max_total_units = {self.detected_max_total_units}")
+        except Exception as e:
+            # 检测失败，使用默认值
+            self.detected_max_total_units = env_config.get('action_space', {}).get('max_total_units', 120)
+            print(f"[单元检测] 检测失败: {e}，使用默认值 max_total_units = {self.detected_max_total_units}")
+    
     def _init_components(self):
         """初始化环境组件"""
         env_config = self.config.get('env', {})
@@ -351,9 +398,13 @@ class PPOTrainer:
         print("[PPO训练器] 初始化中...")
         
         # 创建环境
+        # 设置日志目录（Monitor会保存monitor.csv到这里）
+        log_dir = config.get('log_dir', './logs')
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        
         def make_env():
             env = VitalStreetEnv(config)
-            env = Monitor(env)  # 监控环境
+            env = Monitor(env, filename=os.path.join(log_dir, 'monitor.csv'))  # 监控环境，指定日志文件
             return env
         self.env = DummyVecEnv([make_env])
         print(f"[PPO训练器] 环境创建完成")
@@ -394,6 +445,10 @@ class PPOTrainer:
         self.checkpoint_dir = config.get('checkpoint_dir', './checkpoints')
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         print(f"[PPO训练器] 检查点目录: {self.checkpoint_dir}")
+        
+        # 日志目录
+        self.log_dir = config.get('log_dir', './logs')
+        print(f"[PPO训练器] 日志目录: {self.log_dir} (monitor.csv将保存在这里)")
         print("=" * 80)
     
     def train(self, total_timesteps: Optional[int] = None, log_interval: int = 10):

@@ -21,6 +21,7 @@ train:
   log_interval: 1
   save_interval: 10
   checkpoint_dir: "./checkpoints"
+  log_dir: "./logs"  # 训练日志目录（monitor.csv将保存在这里）
   
   # 网络结构
   policy:
