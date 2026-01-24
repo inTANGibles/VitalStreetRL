@@ -23,6 +23,7 @@ class RasterObservation:
             config: 包含resolution, channels定义等
                 - resolution: [H, W] 栅格分辨率，或 'auto' 表示自动计算
                 - channels: 通道名称列表
+                - target_resolution: [H, W] 目标分辨率（用于填充到固定尺寸，默认: None表示不填充）
                 - auto_resolution: 当resolution='auto'时使用的参数
                     - target_pixels: 目标像素数（用于长边，默认: 256）
                     - min_resolution: 最小分辨率（默认: 128）
@@ -40,6 +41,9 @@ class RasterObservation:
         else:
             self.resolution = resolution  # (H, W)
             self._auto_resolution_config = None
+        
+        # 目标分辨率（用于填充到固定尺寸）
+        self.target_resolution = config.get('target_resolution', None)  # (H, W) 或 None
         
         # 缓存边界框和变换矩阵
         self._bounds = None
@@ -89,7 +93,8 @@ class RasterObservation:
         target_pixels: int = 256,
         min_resolution: int = 128,
         max_resolution: int = 1024,
-        padding: float = 0.05
+        padding: float = 0.05,
+        target_resolution: Optional[list] = None
     ) -> 'RasterObservation':
         """
         创建栅格观测编码器，自动计算保持宽高比的分辨率（类方法）
@@ -101,6 +106,7 @@ class RasterObservation:
             min_resolution: 最小分辨率
             max_resolution: 最大分辨率
             padding: 边界填充比例
+            target_resolution: [H, W] 目标分辨率（用于填充到固定尺寸，默认: None）
             
         Returns:
             raster_obs: RasterObservation对象
@@ -135,7 +141,8 @@ class RasterObservation:
         # 创建配置
         raster_config = {
             'resolution': resolution,
-            'channels': channels
+            'channels': channels,
+            'target_resolution': target_resolution
         }
         
         # 创建栅格观测编码器
@@ -147,6 +154,7 @@ class RasterObservation:
         
         Returns:
             obs: shape=(n_channels, H, W) 的numpy数组，dtype=float32
+                如果设置了target_resolution，会自动填充到目标尺寸
         """
         # 如果分辨率是auto，先计算分辨率
         if self.resolution is None:
@@ -165,7 +173,37 @@ class RasterObservation:
         # 堆叠为多通道数组 (C, H, W)
         obs = np.stack(obs_channels, axis=0).astype(np.float32)
         
+        # 如果设置了target_resolution，填充到目标尺寸
+        if self.target_resolution is not None:
+            obs = self._pad_to_target_resolution(obs)
+        
         return obs
+    
+    def _pad_to_target_resolution(self, obs: np.ndarray) -> np.ndarray:
+        """将观测填充到目标分辨率（居中填充）"""
+        current_shape = obs.shape  # (C, H, W)
+        target_shape = (self.n_channels, self.target_resolution[0], self.target_resolution[1])
+        
+        if current_shape == target_shape:
+            return obs
+        
+        # 如果当前尺寸大于目标尺寸，裁剪（居中裁剪）
+        c, h, w = current_shape
+        target_h, target_w = self.target_resolution[0], self.target_resolution[1]
+        
+        if h > target_h or w > target_w:
+            h_start = (h - target_h) // 2
+            w_start = (w - target_w) // 2
+            obs = obs[:, h_start:h_start+target_h, w_start:w_start+target_w]
+            h, w = target_h, target_w
+        
+        # 创建目标尺寸的零数组并居中填充
+        padded = np.zeros(target_shape, dtype=obs.dtype)
+        h_start = (target_h - h) // 2
+        w_start = (target_w - w) // 2
+        padded[:, h_start:h_start+h, w_start:w_start+w] = obs
+        
+        return padded
     
     def _compute_auto_resolution(self, state: WorldState):
         """自动计算分辨率（当resolution='auto'时调用）"""

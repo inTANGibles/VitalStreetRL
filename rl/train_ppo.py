@@ -128,6 +128,10 @@ class VitalStreetEnv(gym.Env):
         resolution = raster_config.get('resolution', [256, 256])
         channels = raster_config.get('channels', ['walkable_mask', 'predicted_flow', 'landuse_id'])
         
+        # 获取目标分辨率（用于填充到固定尺寸，从observation_space获取）
+        # observation_space.shape = (C, H, W)
+        target_resolution = list(self.observation_space.shape[1:])  # [H, W]
+        
         if resolution == 'auto' or self.raster_obs is None:
             # 使用自动分辨率（根据初始状态计算）
             self.raster_obs = RasterObservation.create_with_auto_resolution(
@@ -136,15 +140,17 @@ class VitalStreetEnv(gym.Env):
                 target_pixels=256,
                 min_resolution=128,
                 max_resolution=1024,
-                padding=0.05
+                padding=0.05,
+                target_resolution=target_resolution  # 填充到固定尺寸
             )
         else:
             # 使用固定分辨率
-            if self.raster_obs.resolution != resolution:
+            if self.raster_obs is None or (hasattr(self.raster_obs, 'resolution') and self.raster_obs.resolution != resolution):
                 # 如果分辨率改变，重新创建编码器
                 self.raster_obs = RasterObservation({
                     'resolution': resolution,
-                    'channels': channels
+                    'channels': channels,
+                    'target_resolution': target_resolution
                 })
         
         # 重置RewardCalculator（保存初始状态的活力值）
@@ -153,7 +159,7 @@ class VitalStreetEnv(gym.Env):
         # 重置历史记录（用于终止检查）
         self.history = []
         
-        # 编码初始观测
+        # 编码初始观测（自动填充到固定尺寸）
         obs = self.raster_obs.encode(self.state)
         
         self.step_count = 0
@@ -190,7 +196,7 @@ class VitalStreetEnv(gym.Env):
         done, reason = self.termination_checker.check(next_state, self.history)
         truncated = False
         
-        # 5. 编码观测
+        # 5. 编码观测（自动填充到固定尺寸）
         obs = self.raster_obs.encode(next_state)
         
         info = {
@@ -219,20 +225,21 @@ class PPOTrainer:
             return env
         self.env = DummyVecEnv([make_env])
         
-        # 创建PPO模型
+        # 创建PPO模型（确保数值参数为正确的类型）
         self.model = PPO(
             policy='CnnPolicy',  # CNN策略，适合图像观测
             env=self.env,
-            learning_rate=self.ppo_config.get('learning_rate', 3e-4),
-            n_steps=self.ppo_config.get('n_steps', 2048),  # 每次收集的步数
-            batch_size=self.ppo_config.get('batch_size', 64),
-            n_epochs=self.ppo_config.get('n_epochs', 4),
-            gamma=self.ppo_config.get('gamma', 0.99),
-            gae_lambda=self.ppo_config.get('gae_lambda', 0.95),
-            clip_range=self.ppo_config.get('clip_epsilon', 0.2),
-            ent_coef=self.ppo_config.get('entropy_coef', 0.01),
-            vf_coef=self.ppo_config.get('value_coef', 0.5),
-            max_grad_norm=self.ppo_config.get('max_grad_norm', 0.5),
+            learning_rate=float(self.ppo_config.get('learning_rate', 3e-4)),
+            n_steps=int(self.ppo_config.get('n_steps', 2048)),  # 每次收集的步数
+            batch_size=int(self.ppo_config.get('batch_size', 64)),
+            n_epochs=int(self.ppo_config.get('n_epochs', 4)),
+            gamma=float(self.ppo_config.get('gamma', 0.99)),
+            gae_lambda=float(self.ppo_config.get('gae_lambda', 0.95)),
+            clip_range=float(self.ppo_config.get('clip_epsilon', 0.2)),
+            ent_coef=float(self.ppo_config.get('entropy_coef', 0.01)),
+            vf_coef=float(self.ppo_config.get('value_coef', 0.5)),
+            max_grad_norm=float(self.ppo_config.get('max_grad_norm', 0.5)),
+            policy_kwargs={'normalize_images': False},  # 观测已经是归一化的[0,1]图像
             verbose=1,
             device=config.get('device', 'auto'),
         )

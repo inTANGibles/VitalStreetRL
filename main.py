@@ -40,7 +40,7 @@ def main():
         # 计算总步数（从episode数估算，或直接使用timesteps）
         n_episodes = train_config.get('n_episodes', 1000)
         # 假设平均每个episode 100步
-        total_timesteps = n_episodes * 100
+        total_timesteps = n_episodes * 20
         
         trainer.train(
             total_timesteps=total_timesteps,
