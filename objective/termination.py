@@ -22,9 +22,13 @@ class TerminationChecker:
         self.stagnation_threshold = config.get('stagnation_threshold', 10)
         self.violation_threshold = config.get('violation_threshold', 100.0)
     
-    def check(self, state: WorldState, history: List[Dict[str, Any]]) -> Tuple[bool, str]:
+    def check(self, state: WorldState, history: List[float]) -> Tuple[bool, str]:
         """
         检查是否终止
+        
+        Args:
+            state: 当前状态
+            history: 最近N步的reward列表（用于停滞检查）
         
         Returns:
             done: 是否终止
@@ -37,6 +41,10 @@ class TerminationChecker:
         if state.step_idx >= self.max_steps:
             return True, TerminationReason.MAX_STEPS
         
-        # ... 其他检查
+        # 检查停滞（reward变化很小）
+        if len(history) >= self.stagnation_threshold:
+            recent_rewards = history[-self.stagnation_threshold:]
+            if len(set(recent_rewards)) <= 1:  # 所有reward都相同
+                return True, TerminationReason.STAGNATION
         
         return False, ""

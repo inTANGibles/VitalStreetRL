@@ -10,6 +10,16 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
+# 导入动作空间定义
+from env.action_space import ActionSpace, ActionType
+# 导入环境组件
+from env.world_state import WorldState
+from env.representation.raster_obs import RasterObservation
+from env.transition import Transition
+# 导入目标函数组件
+from objective.reward import RewardCalculator
+from objective.termination import TerminationChecker
+
 
 class VitalStreetEnv(gym.Env):
     """VitalStreet GYM环境包装器（精简版）"""
@@ -30,15 +40,23 @@ class VitalStreetEnv(gym.Env):
             dtype=np.float32
         )
         
-        # 动作空间：multi-discrete（简化版，实际需要根据ActionSpace定义）
+        # 动作空间：使用真实的ActionSpace定义
         action_config = config.get('env', {}).get('action_space', {})
-        # 假设动作空间：5种动作类型，最大1000个节点，最大2000条边
-        n_action_types = len(action_config.get('action_types', []))
-        self.action_space = spaces.MultiDiscrete([
-            n_action_types,  # 动作类型
-            action_config.get('max_nodes', 1000),  # 目标节点
-            action_config.get('max_edges', 2000),  # 目标边
-        ])
+        
+        # 创建ActionSpace实例以获取正确的动作维度
+        action_space_manager = ActionSpace(action_config)
+        action_dims = action_space_manager.get_action_dim()
+        
+        # 确保所有维度都为正数
+        for i, dim in enumerate(action_dims):
+            if dim <= 0:
+                raise ValueError(f"动作空间维度 {i} 必须为正数，当前: {dim}")
+        
+        # 创建MultiDiscrete动作空间
+        self.action_space = spaces.MultiDiscrete(action_dims)
+        
+        # 保存ActionSpace管理器供后续使用
+        self.action_space_manager = action_space_manager
         
         # 初始化环境组件（假设这些模块存在）
         # 注意：测试阶段可以先用mock数据
@@ -46,60 +64,141 @@ class VitalStreetEnv(gym.Env):
         
     def _init_components(self):
         """初始化环境组件"""
-        # TODO: 实际实现中需要导入并初始化：
-        # - WorldState
-        # - RasterObservation
-        # - ActionSpace
-        # - Transition
-        # - RewardCalculator
-        # - TerminationChecker
-        # - STGNNWrapper等
+        env_config = self.config.get('env', {})
+        
+        # 初始化RasterObservation编码器
+        raster_config = env_config.get('representation', {}).get('raster', {})
+        self.raster_obs = None  # 将在reset时根据初始状态创建
+        
+        # 获取初始状态路径（从配置或默认值）
+        self.initial_geojson_path = env_config.get('initial_state', {}).get('geojson_path', 'data/0123_2.geojson')
+        self.budget = env_config.get('constraints', {}).get('max_budget', 1000000.0)
+        self.constraints = env_config.get('constraints', {})
+        
+        # 初始化Transition（状态转移引擎）
+        transition_config = env_config.get('transition', {})
+        self.transition = Transition(transition_config)
+        
+        # 初始化RewardCalculator（奖励计算器）
+        self.reward_calculator = RewardCalculator(self.config.get('reward', {}))
+        
+        # 初始化TerminationChecker（终止条件检查器）
+        termination_config = env_config.get('termination', {})
+        self.termination_checker = TerminationChecker(termination_config)
+        
+        # 状态和步数
         self.state = None
         self.step_count = 0
-        self.max_steps = self.config.get('env', {}).get('termination', {}).get('max_steps', 100)
+        self.max_steps = env_config.get('termination', {}).get('max_steps', 100)
+        
+        # 历史记录（仅用于终止检查，精简：只存储reward）
+        self.history = []  # List[float]: 最近N步的reward
         
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
         """重置环境"""
         super().reset(seed=seed)
         
-        # TODO: 初始化WorldState
-        # self.state = WorldState.initialize(...)
+        # 从GeoJSON加载初始状态
+        try:
+            self.state = WorldState.from_geojson(
+                geojson_path=self.initial_geojson_path,
+                budget=self.budget,
+                constraints=self.constraints,
+                episode_id=f"episode_{self.step_count}"
+            )
+        except FileNotFoundError:
+            # 如果文件不存在，使用默认状态（空状态）
+            from env.geo.space_unit import SpaceUnitCollection
+            from env.geo.street_network import StreetNetworkCollection
+            from env.geo.business_type import BusinessTypeCollection
+            
+            self.state = WorldState(
+                space_units=SpaceUnitCollection(),
+                street_network=StreetNetworkCollection(),
+                business_types=BusinessTypeCollection(),
+                graph=None,
+                budget=self.budget,
+                constraints=self.constraints,
+                step_idx=0,
+                episode_id=f"episode_{self.step_count}"
+            )
         
-        # TODO: 获取初始观测
-        # obs = RasterObservation.from_state(self.state)
+        # 创建或重置RasterObservation编码器
+        raster_config = self.config.get('env', {}).get('representation', {}).get('raster', {})
+        resolution = raster_config.get('resolution', [256, 256])
+        channels = raster_config.get('channels', ['walkable_mask', 'predicted_flow', 'landuse_id'])
         
-        # 测试阶段：返回随机观测
-        obs = self.observation_space.sample()
+        if resolution == 'auto' or self.raster_obs is None:
+            # 使用自动分辨率（根据初始状态计算）
+            self.raster_obs = RasterObservation.create_with_auto_resolution(
+                state=self.state,
+                channels=channels,
+                target_pixels=256,
+                min_resolution=128,
+                max_resolution=1024,
+                padding=0.05
+            )
+        else:
+            # 使用固定分辨率
+            if self.raster_obs.resolution != resolution:
+                # 如果分辨率改变，重新创建编码器
+                self.raster_obs = RasterObservation({
+                    'resolution': resolution,
+                    'channels': channels
+                })
+        
+        # 重置RewardCalculator（保存初始状态的活力值）
+        self.reward_calculator.reset(self.state)
+        
+        # 重置历史记录（用于终止检查）
+        self.history = []
+        
+        # 编码初始观测
+        obs = self.raster_obs.encode(self.state)
         
         self.step_count = 0
-        info = {}
+        info = {
+            'episode_id': self.state.episode_id,
+            'step': self.step_count
+        }
         return obs, info
     
     def step(self, action):
         """执行一步"""
-        # TODO: 实际实现：
-        # 1. 解码动作: action_obj = ActionSpace.decode(action)
-        # 2. 执行转移: next_state = Transition.step(self.state, action_obj)
-        # 3. 计算奖励: reward, reward_terms = RewardCalculator.compute(...)
-        # 4. 检查终止: done, reason = TerminationChecker.check(...)
-        # 5. 获取观测: obs = RasterObservation.from_state(next_state)
+        action = np.asarray(action).flatten()
+        action_obj = self.action_space_manager.decode(action, self.state)
         
-        # 测试阶段：简单模拟
-        self.step_count += 1
+        # 2. 执行转移
+        prev_state = self.state
+        next_state, transition_info = self.transition.step(self.state, action_obj)
+        self.state = next_state
         
-        # 随机奖励（测试用）
-        reward = np.random.randn() * 0.1
+        # 3. 计算奖励
+        reward, reward_terms = self.reward_calculator.compute(
+            state=prev_state,
+            action=action_obj,
+            next_state=next_state
+        )
         
-        # 检查终止
-        done = self.step_count >= self.max_steps
+        # 4. 检查终止（history仅存储reward用于停滞检查）
+        self.history.append(reward)
+        # 保持history长度不超过stagnation_threshold
+        stagnation_threshold = self.config.get('env', {}).get('termination', {}).get('stagnation_threshold', 10)
+        if len(self.history) > stagnation_threshold:
+            self.history.pop(0)
+        
+        done, reason = self.termination_checker.check(next_state, self.history)
         truncated = False
         
-        # 下一个观测
-        obs = self.observation_space.sample()
+        # 5. 编码观测
+        obs = self.raster_obs.encode(next_state)
         
         info = {
-            'step': self.step_count,
-            'episode': {'r': reward}
+            'step': next_state.step_idx,
+            'episode': {'r': reward},
+            'reward_terms': reward_terms,
+            'termination_reason': reason,
+            'transition_info': transition_info
         }
         
         return obs, reward, done, truncated, info

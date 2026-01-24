@@ -3,7 +3,7 @@ import argparse
 import yaml
 from pathlib import Path
 from rl.train_ppo import PPOTrainer
-from logging.episode_logger import EpisodeLogger
+# from logging.episode_logger import EpisodeLogger  # 暂时未使用，注释掉
 
 
 def load_config(config_path: str) -> dict:
@@ -23,13 +23,17 @@ def main():
     # 加载配置
     config = load_config(args.config)
     
+    # 加载环境配置（如果train.yaml中没有）
+    if 'env' not in config:
+        cfg = load_config('configs/env.yaml')
+        config['env'] = cfg.get('env', {})
     if args.mode == 'train':
-        # 训练模式
         train_config = config['train']
-        
-        # 合并env配置（如果需要）
-        if 'env' in config:
-            train_config['env'] = config['env']
+        train_config['env'] = config['env']
+        if 'reward' not in config:
+            cfg = load_config('configs/reward.yaml')
+            config['reward'] = cfg.get('reward', {})
+        train_config['reward'] = config.get('reward', {})
         
         trainer = PPOTrainer(train_config)
         

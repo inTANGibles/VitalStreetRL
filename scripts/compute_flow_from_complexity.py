@@ -11,8 +11,7 @@
 
 复杂度计算公式：
 - 功能多样性（Shannon熵）：衡量周边业态类型的多样性
-- 功能密度：周边单元的数量和面积
-- 功能权重：不同业态类型对吸引力的贡献权重
+- 功能权重：不同业态类型对吸引力的贡献权重（加权功能总和）
 """
 
 import sys
@@ -109,7 +108,6 @@ def compute_surrounding_complexity(
     Returns:
         complexity_metrics: 复杂度指标字典
             - diversity: 功能多样性（Shannon熵）
-            - density: 功能密度（周边单元数量/面积）
             - weighted_sum: 加权功能总和
             - total_area: 周边单元总面积
             - count: 周边单元数量
@@ -119,7 +117,6 @@ def compute_surrounding_complexity(
     if target_geometry is None or target_geometry.is_empty:
         return {
             'diversity': 0.0,
-            'density': 0.0,
             'weighted_sum': 0.0,
             'total_area': 0.0,
             'count': 0
@@ -138,7 +135,6 @@ def compute_surrounding_complexity(
     if len(overlapping_units) == 0:
         return {
             'diversity': 0.0,
-            'density': 0.0,
             'weighted_sum': 0.0,
             'total_area': 0.0,
             'count': 0
@@ -172,7 +168,6 @@ def compute_surrounding_complexity(
     if len(categories) == 0:
         return {
             'diversity': 0.0,
-            'density': 0.0,
             'weighted_sum': 0.0,
             'total_area': 0.0,
             'count': 0
@@ -181,17 +176,12 @@ def compute_surrounding_complexity(
     # 计算功能多样性（Shannon熵）
     diversity = compute_shannon_entropy(categories)
     
-    # 计算功能密度（周边单元数量 / buffer面积）
-    buffer_area = buffer_geom.area
-    density = len(categories) / buffer_area if buffer_area > 0 else 0.0
-    
     # 计算加权功能总和（面积加权）
     total_area = sum(areas)
     weighted_sum = sum(w * a for w, a in zip(weights, areas)) / total_area if total_area > 0 else 0.0
     
     return {
         'diversity': diversity,
-        'density': density,
         'weighted_sum': weighted_sum,
         'total_area': total_area,
         'count': len(categories)
@@ -200,11 +190,10 @@ def compute_surrounding_complexity(
 
 def compute_flow_from_complexity(
     collection: SpaceUnitCollection,
-    buffer_distance: float = 50.0,
+    buffer_distance: float = 10.0,
     base_flow: float = 0.0,
-    diversity_weight: float = 0.4,
-    density_weight: float = 0.3,
-    weighted_sum_weight: float = 0.3,
+    diversity_weight: float = 0.5,
+    weighted_sum_weight: float = 0.5,
     normalize: bool = True
 ) -> SpaceUnitCollection:
     """
@@ -213,11 +202,10 @@ def compute_flow_from_complexity(
     
     Args:
         collection: SpaceUnitCollection对象
-        buffer_distance: buffer距离（米），默认50米
+        buffer_distance: buffer距离（米），默认10米
         base_flow: 基础流量值，默认0.0
-        diversity_weight: 多样性权重，默认0.4
-        density_weight: 密度权重，默认0.3
-        weighted_sum_weight: 加权总和权重，默认0.3
+        diversity_weight: 多样性权重，默认0.5
+        weighted_sum_weight: 加权总和权重，默认0.5
         normalize: 是否归一化到[0, 1]范围
         
     Returns:
@@ -254,10 +242,9 @@ def compute_flow_from_complexity(
             exclude_self=True
         )
         
-        # 计算综合复杂度分数
+        # 计算综合复杂度分数（只使用diversity和weighted_sum）
         score = (
             diversity_weight * complexity['diversity'] +
-            density_weight * complexity['density'] * 1000 +  # 密度需要缩放
             weighted_sum_weight * complexity['weighted_sum']
         )
         
@@ -301,16 +288,14 @@ def main():
                        help='输入的GeoJSON文件路径')
     parser.add_argument('--output', '-o', type=str, required=True,
                        help='输出的GeoJSON文件路径')
-    parser.add_argument('--buffer', type=float, default=50.0,
-                       help='Buffer距离（米），默认: 50.0')
+    parser.add_argument('--buffer', type=float, default=10.0,
+                       help='Buffer距离（米），默认: 10.0')
     parser.add_argument('--base-flow', type=float, default=0.0,
                        help='基础流量值，默认: 0.0')
-    parser.add_argument('--diversity-weight', type=float, default=0.4,
-                       help='多样性权重，默认: 0.4')
-    parser.add_argument('--density-weight', type=float, default=0.3,
-                       help='密度权重，默认: 0.3')
-    parser.add_argument('--weighted-sum-weight', type=float, default=0.3,
-                       help='加权总和权重，默认: 0.3')
+    parser.add_argument('--diversity-weight', type=float, default=0.5,
+                       help='多样性权重，默认: 0.5')
+    parser.add_argument('--weighted-sum-weight', type=float, default=0.5,
+                       help='加权总和权重，默认: 0.5')
     parser.add_argument('--no-normalize', action='store_true',
                        help='不归一化复杂度分数')
     
@@ -344,7 +329,6 @@ def main():
             buffer_distance=args.buffer,
             base_flow=args.base_flow,
             diversity_weight=args.diversity_weight,
-            density_weight=args.density_weight,
             weighted_sum_weight=args.weighted_sum_weight,
             normalize=not args.no_normalize
         )

@@ -39,7 +39,9 @@ class VitalityMetrics:
         混合度衡量业态类型的多样性，使用Shannon熵或Simpson指数
         Returns: 0-1之间的值，1表示完全混合
         """
-        shops = state.space_units.get_space_units_by_business_type('shop')
+        # 获取所有unit_type为'shop'的单元
+        all_units = state.space_units.get_all_space_units()
+        shops = all_units[all_units['unit_type'] == 'shop']
         if len(shops) == 0:
             return 0.0
         
@@ -74,7 +76,9 @@ class VitalityMetrics:
         空置率 = 空置shop数量 / 总shop数量
         Returns: 0-1之间的值，0表示无空置
         """
-        all_shops = state.space_units.get_space_units_by_business_type('shop')
+        # 获取所有unit_type为'shop'的单元
+        all_units = state.space_units.get_all_space_units()
+        all_shops = all_units[all_units['unit_type'] == 'shop']
         if len(all_shops) == 0:
             return 0.0
         
@@ -95,7 +99,9 @@ class VitalityMetrics:
         HHI = Σ(p_i^2)，其中p_i是第i种业态的比例
         Returns: 0-1之间的值，1表示完全集中（单一业态），0表示完全分散
         """
-        shops = state.space_units.get_space_units_by_business_type('shop')
+        # 获取所有unit_type为'shop'的单元
+        all_units = state.space_units.get_all_space_units()
+        shops = all_units[all_units['unit_type'] == 'shop']
         if len(shops) == 0:
             return 0.0
         

@@ -1,5 +1,5 @@
 """CNN策略：用于Raster观测"""
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 import torch
 import torch.nn as nn
 import numpy as np
