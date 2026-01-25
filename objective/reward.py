@@ -61,23 +61,38 @@ class RewardCalculator:
             reward: 标量奖励
             reward_terms: 分项字典（用于日志）
         """
+        step_idx = next_state.step_idx if hasattr(next_state, 'step_idx') else 0
+        print(f"[DEBUG Reward Step {step_idx}] [3.1] 开始 _compute_vitality(prev_state)...")
         # 计算活力变化（与初始值对比）
         if V_prev is None:
             V_prev = self._compute_vitality(state)
+            print(f"[DEBUG Reward Step {step_idx}] [3.1] ✓ _compute_vitality(prev_state) 完成: {V_prev}")
+        else:
+            print(f"[DEBUG Reward Step {step_idx}] [3.1] 使用提供的 V_prev: {V_prev}")
+        
+        print(f"[DEBUG Reward Step {step_idx}] [3.2] 开始 _compute_vitality(next_state)...")
         if V_next is None:
             V_next = self._compute_vitality(next_state)
+            print(f"[DEBUG Reward Step {step_idx}] [3.2] ✓ _compute_vitality(next_state) 完成: {V_next}")
+        else:
+            print(f"[DEBUG Reward Step {step_idx}] [3.2] 使用提供的 V_next: {V_next}")
         
+        print(f"[DEBUG Reward Step {step_idx}] [3.3] 计算 delta_v, cost, violation...")
         delta_v = self._compute_vitality_change(V_prev, V_next)
         cost = self._compute_cost(action)
         violation = self._compute_violation(next_state)
+        print(f"[DEBUG Reward Step {step_idx}] [3.3] ✓ delta_v={delta_v:.3f}, cost={cost:.3f}, violation={violation:.3f}")
         
         reward = delta_v - self.lambda_cost * cost - self.mu_violation * violation
+        print(f"[DEBUG Reward Step {step_idx}] [3.4] 总奖励计算完成: {reward:.3f}")
         
         # 计算当前状态的活力指标（用于日志）
+        print(f"[DEBUG Reward Step {step_idx}] [3.5] 开始 vitality_metrics.compute() (可能涉及几何操作)...")
         current_v_vec = self.vitality_metrics.compute(
             F_hat=np.array([]),
             state=next_state
         )
+        print(f"[DEBUG Reward Step {step_idx}] [3.5] ✓ vitality_metrics.compute() 完成")
         
         reward_terms = {
             'delta_vitality': delta_v,
@@ -107,20 +122,28 @@ class RewardCalculator:
         Returns:
             vitality: 活力值（面积加权的人流量总和）
         """
+        step_idx = state.step_idx if hasattr(state, 'step_idx') else 0
+        print(f"[DEBUG Reward Step {step_idx}] [3.x.1] _compute_vitality: 调用 get_public_spaces()...")
         public_spaces = state.space_units.get_public_spaces()
+        print(f"[DEBUG Reward Step {step_idx}] [3.x.1] ✓ get_public_spaces() 完成, 数量={len(public_spaces)}")
         
         if len(public_spaces) == 0:
+            print(f"[DEBUG Reward Step {step_idx}] [3.x.2] 无公共空间，返回0.0")
             return 0.0
         
         # 计算面积加权的人流量累加
         # vitality = sum(area_i * flow_prediction_i) for all public_space units
+        print(f"[DEBUG Reward Step {step_idx}] [3.x.2] 提取areas和flows...")
         areas = public_spaces['area'].values
         flows = public_spaces['flow_prediction'].values
         
         # 确保flow_prediction不为NaN
+        print(f"[DEBUG Reward Step {step_idx}] [3.x.3] 处理NaN值...")
         flows = np.nan_to_num(flows, nan=0.0)
         
+        print(f"[DEBUG Reward Step {step_idx}] [3.x.4] 计算加权和...")
         vitality = np.sum(areas * flows)
+        print(f"[DEBUG Reward Step {step_idx}] [3.x.4] ✓ vitality计算完成: {vitality:.3f}")
         
         return float(vitality)
     

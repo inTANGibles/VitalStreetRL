@@ -156,27 +156,43 @@ class RasterObservation:
             obs: shape=(n_channels, H, W) 的numpy数组，dtype=float32
                 如果设置了target_resolution，会自动填充到目标尺寸
         """
+        step_idx = state.step_idx if hasattr(state, 'step_idx') else 0
+        print(f"[DEBUG Observation Step {step_idx}] [5.1] RasterObservation.encode() 开始")
+        
         # 如果分辨率是auto，先计算分辨率
         if self.resolution is None:
+            print(f"[DEBUG Observation Step {step_idx}] [5.1.1] 计算自动分辨率...")
             self._compute_auto_resolution(state)
+            print(f"[DEBUG Observation Step {step_idx}] [5.1.1] ✓ 自动分辨率计算完成: {self.resolution}")
         
         # 计算边界框（如果还没有缓存）
         if self._bounds is None:
+            print(f"[DEBUG Observation Step {step_idx}] [5.1.2] 计算边界框 (可能涉及shapely几何操作)...")
             self._compute_bounds(state)
+            print(f"[DEBUG Observation Step {step_idx}] [5.1.2] ✓ 边界框计算完成")
         
         # 为每个通道创建栅格
+        print(f"[DEBUG Observation Step {step_idx}] [5.1.3] 开始渲染通道 (可能涉及shapely几何操作)...")
         obs_channels = []
-        for channel_name in self.channels:
+        for i, channel_name in enumerate(self.channels):
+            print(f"[DEBUG Observation Step {step_idx}] [5.1.3.{i+1}] 渲染通道 '{channel_name}'...")
             channel_data = self._render_channel(state, channel_name)
             obs_channels.append(channel_data)
+            print(f"[DEBUG Observation Step {step_idx}] [5.1.3.{i+1}] ✓ 通道 '{channel_name}' 渲染完成")
+        print(f"[DEBUG Observation Step {step_idx}] [5.1.3] ✓ 所有通道渲染完成")
         
         # 堆叠为多通道数组 (C, H, W)
+        print(f"[DEBUG Observation Step {step_idx}] [5.1.4] 堆叠通道...")
         obs = np.stack(obs_channels, axis=0).astype(np.float32)
+        print(f"[DEBUG Observation Step {step_idx}] [5.1.4] ✓ 通道堆叠完成, shape={obs.shape}")
         
         # 如果设置了target_resolution，填充到目标尺寸
         if self.target_resolution is not None:
+            print(f"[DEBUG Observation Step {step_idx}] [5.1.5] 填充到目标分辨率 {self.target_resolution}...")
             obs = self._pad_to_target_resolution(obs)
+            print(f"[DEBUG Observation Step {step_idx}] [5.1.5] ✓ 填充完成, shape={obs.shape}")
         
+        print(f"[DEBUG Observation Step {step_idx}] [5.1] ✓ RasterObservation.encode() 完成")
         return obs
     
     def _pad_to_target_resolution(self, obs: np.ndarray) -> np.ndarray:
@@ -318,13 +334,18 @@ class RasterObservation:
         Returns:
             raster: (H, W) 栅格图像
         """
+        # 注意：这个方法涉及大量shapely几何操作，可能是崩溃点
         raster = np.zeros((self.resolution[0], self.resolution[1]), dtype=np.float32)
         
         if geometry is None or geometry.is_empty or Point is None:
             return raster
         
-        # 计算多边形的边界框（栅格坐标）
-        bounds = geometry.bounds  # (x_min, y_min, x_max, y_max)
+        # 计算多边形的边界框（栅格坐标）- shapely操作
+        try:
+            bounds = geometry.bounds  # (x_min, y_min, x_max, y_max) - 可能崩溃点
+        except Exception as e:
+            print(f"[DEBUG] _rasterize_polygon: geometry.bounds 失败: {e}")
+            return raster
         
         i_min, j_min = self._world_to_raster(bounds[0], bounds[1])
         i_max, j_max = self._world_to_raster(bounds[2], bounds[3])
@@ -338,11 +359,14 @@ class RasterObservation:
         if i_min > i_max or j_min > j_max:
             return raster
         
-        # 使用prepared geometry加速（如果可用）
+        # 使用prepared geometry加速（如果可用）- shapely操作
         try:
             from shapely.prepared import prep
-            prepared_geom = prep(geometry)
+            prepared_geom = prep(geometry)  # 可能崩溃点
         except ImportError:
+            prepared_geom = geometry
+        except Exception as e:
+            print(f"[DEBUG] _rasterize_polygon: prep(geometry) 失败: {e}")
             prepared_geom = geometry
         
         # 批量生成栅格点坐标
@@ -356,15 +380,19 @@ class RasterObservation:
         world_x_flat = world_x.flatten()
         world_y_flat = world_y.flatten()
         
-        # 批量检查点是否在多边形内（使用prepared geometry加速）
-        if hasattr(prepared_geom, 'contains'):
-            # 使用prepared geometry
-            points = [Point(x, y) for x, y in zip(world_x_flat, world_y_flat)]
-            contains_mask = np.array([prepared_geom.contains(p) for p in points])
-        else:
-            # 回退到普通geometry
-            points = [Point(x, y) for x, y in zip(world_x_flat, world_y_flat)]
-            contains_mask = np.array([geometry.contains(p) or geometry.touches(p) for p in points])
+        # 批量检查点是否在多边形内（使用prepared geometry加速）- 大量shapely操作，可能崩溃点
+        try:
+            if hasattr(prepared_geom, 'contains'):
+                # 使用prepared geometry
+                points = [Point(x, y) for x, y in zip(world_x_flat, world_y_flat)]  # 创建Point对象
+                contains_mask = np.array([prepared_geom.contains(p) for p in points])  # 可能崩溃点
+            else:
+                # 回退到普通geometry
+                points = [Point(x, y) for x, y in zip(world_x_flat, world_y_flat)]  # 创建Point对象
+                contains_mask = np.array([geometry.contains(p) or geometry.touches(p) for p in points])  # 可能崩溃点
+        except Exception as e:
+            print(f"[DEBUG] _rasterize_polygon: 点包含检查失败: {e}, 跳过此多边形")
+            return raster
         
         # 重塑为原始形状并填充值
         contains_mask = contains_mask.reshape(i_coords.shape)

@@ -25,7 +25,7 @@ def find_monitor_files(log_dir: str = "./logs") -> list:
         monitor_files.extend(glob.glob(pattern, recursive=True))
     
     # 也在当前目录和常见位置查找
-    common_dirs = [".", "./logs", "./train_logs", "./output"]
+    common_dirs = [".", "./logs", "./t1rain_logs", "./output"]
     for dir_path in common_dirs:
         if os.path.exists(dir_path):
             pattern = os.path.join(dir_path, "**", "monitor.csv")

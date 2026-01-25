@@ -263,7 +263,7 @@ def main():
         if not args.no_visualize:
             # 可视化各通道
             vis_path = output_dir / 'raster_channels.png'
-            visualize_raster_channels(obs, channels, str(vis_path))
+            visualize_raster_channels(obs, channels, str(vis_path), maintain_256x256=True)
         
         print(f"\n完成！输出目录: {output_dir}")
         

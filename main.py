@@ -61,7 +61,7 @@ def main():
             cfg = load_config('configs/reward.yaml')
             train_config['reward'] = cfg.get('reward', {})
         
-        # 使用render_episode_observations脚本进行评估
+        # 使用render_episode_observations脚本进行评估 
         print("提示: 使用以下命令进行详细评估和observation渲染:")
         print(f"  python scripts/render_episode_observations.py --checkpoint {args.checkpoint} --config {args.config}")
         print("\n或者直接运行评估...")

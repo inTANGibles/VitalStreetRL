@@ -5,13 +5,18 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional
 import os
+import sys
+
+# 添加项目根目录到Python路径（确保可以导入项目模块）
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
 from rl.train_ppo import VitalStreetEnv
-from env.representation.visualization import visualize_raster_channels, visualize_rgb_composite
+from env.representation.visualization import visualize_raster_channels
 
 
 def load_config(config_path: str) -> dict:
@@ -25,12 +30,10 @@ def render_episodes(
     config_path: str,
     output_dir: str,
     n_episodes: int = 5,
-    save_every_n_steps: int = 1,
-    render_channels: bool = True,
-    render_rgb: bool = True
+    save_every_n_steps: int = 1
 ):
     """
-    运行模型并渲染每个Episode的Observation
+    运行模型并渲染每个Episode的Observation（三个通道）
     
     Args:
         checkpoint_path: 模型检查点路径
@@ -38,8 +41,6 @@ def render_episodes(
         output_dir: 输出目录
         n_episodes: 要渲染的episode数量
         save_every_n_steps: 每N步保存一次observation（1表示每步都保存）
-        render_channels: 是否渲染各通道图像
-        render_rgb: 是否渲染RGB合成图
     """
     # 创建输出目录
     output_dir = Path(output_dir)
@@ -88,6 +89,8 @@ def render_episodes(
     # 获取通道名称
     obs_config = train_config.get('env', {}).get('representation', {}).get('raster', {})
     channel_names = obs_config.get('channels', ['walkable_mask', 'predicted_flow', 'landuse_id'])
+    print(f"通道名称: {channel_names}")
+    print(f"通道数量: {len(channel_names)}")
     
     # 运行episodes
     for episode_idx in range(n_episodes):
@@ -104,26 +107,30 @@ def render_episodes(
         episode_id = info[0].get('episode_id', f'episode_{episode_idx + 1}')
         
         print(f"Episode ID: {episode_id}")
+        print(f"Observation形状: {obs[0].shape if isinstance(obs, (list, tuple, np.ndarray)) else obs.shape}")
+        print(f"输出目录: {episode_dir.absolute()}")
         
         step_count = 0
         done = False
         
         # 保存初始observation
-        if render_channels:
-            initial_path = episode_dir / "step_000_initial_channels.png"
+        initial_path = episode_dir / "step_000_initial_channels.png"
+        try:
+            print(f"  保存初始observation 到: {initial_path}")
             visualize_raster_channels(
                 obs[0],  # 从vec_env中提取单个观测
                 channel_names,
-                output_path=str(initial_path)
+                output_path=str(initial_path),
+                maintain_256x256=True  # 保持256x256尺寸
             )
-        
-        if render_rgb:
-            initial_rgb_path = episode_dir / "step_000_initial_rgb.png"
-            visualize_rgb_composite(
-                obs[0],
-                channel_names,
-                output_path=str(initial_rgb_path)
-            )
+            if initial_path.exists():
+                print(f"  ✓ 已保存: {initial_path}")
+            else:
+                print(f"  ✗ 保存失败: {initial_path} 不存在")
+        except Exception as e:
+            print(f"  ✗ 保存初始observation失败: {e}")
+            import traceback
+            traceback.print_exc()
         
         # 运行episode
         while not done:
@@ -139,22 +146,18 @@ def render_episodes(
             # 每N步保存一次observation
             if step_count % save_every_n_steps == 0 or done[0]:
                 step_str = f"step_{step_count:03d}"
-                
-                if render_channels:
-                    channels_path = episode_dir / f"{step_str}_channels.png"
+                channels_path = episode_dir / f"{step_str}_channels.png"
+                try:
                     visualize_raster_channels(
                         obs[0],
                         channel_names,
-                        output_path=str(channels_path)
+                        output_path=str(channels_path),
+                        maintain_256x256=True  # 保持256x256尺寸
                     )
-                
-                if render_rgb:
-                    rgb_path = episode_dir / f"{step_str}_rgb.png"
-                    visualize_rgb_composite(
-                        obs[0],
-                        channel_names,
-                        output_path=str(rgb_path)
-                    )
+                    if not channels_path.exists():
+                        print(f"  ⚠ 警告: {channels_path} 未成功保存")
+                except Exception as e:
+                    print(f"  ✗ 保存 {channels_path} 失败: {e}")
             
             # 打印步骤信息
             if step_count % 5 == 0 or done[0]:
@@ -168,27 +171,58 @@ def render_episodes(
         # Episode结束信息
         final_reward = step_info.get('episode', {}).get('r', 0.0)
         termination_reason = step_info.get('termination_reason', 'unknown')
+        
+        # 检查保存的文件
+        saved_files = list(episode_dir.glob("*.png"))
         print(f"\nEpisode {episode_idx + 1} 结束:")
         print(f"  总步数: {step_count}")
         print(f"  累计奖励: {final_reward:.3f}")
         print(f"  终止原因: {termination_reason}")
         print(f"  输出目录: {episode_dir}")
+        print(f"  已保存图像数: {len(saved_files)}")
+        if len(saved_files) == 0:
+            print(f"  ⚠ 警告: 没有保存任何图像文件！")
+        else:
+            print(f"  图像文件列表:")
+            for f in sorted(saved_files)[:5]:  # 只显示前5个
+                print(f"    - {f.name}")
+            if len(saved_files) > 5:
+                print(f"    ... 还有 {len(saved_files) - 5} 个文件")
+    
+    # 最终统计
+    total_files = 0
+    for episode_dir in output_dir.glob("episode_*"):
+        if episode_dir.is_dir():
+            files = list(episode_dir.glob("*.png"))
+            total_files += len(files)
     
     print("\n" + "=" * 80)
     print("渲染完成！")
-    print(f"所有图像已保存到: {output_dir}")
+    print(f"输出目录: {output_dir}")
+    print(f"总Episode数: {n_episodes}")
+    print(f"总图像文件数: {total_files}")
+    
+    if total_files == 0:
+        print("\n⚠ 警告: 没有保存任何图像文件！")
+        print("可能的原因:")
+        print("  1. observation为空或格式不正确")
+        print("  2. matplotlib保存失败（检查权限）")
+        print("  3. 输出目录路径问题")
+        print(f"\n请检查输出目录: {output_dir.absolute()}")
+    else:
+        print(f"\n✓ 成功保存 {total_files} 个图像文件")
+        print(f"查看图像: 打开文件夹 {output_dir.absolute()}")
+    
     print("=" * 80)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='渲染Episode的Observation')
+    parser = argparse.ArgumentParser(description='渲染Episode的Observation（三个通道）')
     parser.add_argument('--checkpoint', type=str, required=True, help='模型检查点路径')
     parser.add_argument('--config', type=str, default='configs/train.yaml', help='配置文件路径')
     parser.add_argument('--output-dir', type=str, default='./logs/episode_observations', help='输出目录')
     parser.add_argument('--n-episodes', type=int, default=5, help='要渲染的episode数量')
     parser.add_argument('--save-every-n-steps', type=int, default=1, help='每N步保存一次observation')
-    parser.add_argument('--no-channels', action='store_true', help='不渲染各通道图像')
-    parser.add_argument('--no-rgb', action='store_true', help='不渲染RGB合成图')
     
     args = parser.parse_args()
     
@@ -197,9 +231,7 @@ def main():
         config_path=args.config,
         output_dir=args.output_dir,
         n_episodes=args.n_episodes,
-        save_every_n_steps=args.save_every_n_steps,
-        render_channels=not args.no_channels,
-        render_rgb=not args.no_rgb
+        save_every_n_steps=args.save_every_n_steps
     )
 
 

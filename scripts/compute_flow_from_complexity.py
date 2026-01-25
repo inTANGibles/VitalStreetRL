@@ -188,17 +188,77 @@ def compute_surrounding_complexity(
     }
 
 
+def compute_surrounding_public_space_flow(
+    target_unit: gpd.GeoSeries,
+    all_units: gpd.GeoDataFrame,
+    buffer_distance: float,
+    exclude_self: bool = True
+) -> float:
+    """
+    计算目标public space周边其他public space的flow_prediction加权平均
+    
+    Args:
+        target_unit: 目标public space单元（GeoSeries）
+        all_units: 所有空间单元的GeoDataFrame
+        buffer_distance: buffer距离（米）
+        exclude_self: 是否排除自身
+        
+    Returns:
+        weighted_flow: 周边public space的flow_prediction加权平均（按面积加权）
+    """
+    target_geometry = target_unit['geometry']
+    if target_geometry is None or target_geometry.is_empty:
+        return 0.0
+    
+    buffer_geom = target_geometry.buffer(buffer_distance)
+    
+    # 找到与buffer重叠的public_space单元
+    public_space_mask = all_units['unit_type'] == 'public_space'
+    overlapping_units = all_units[public_space_mask & all_units.geometry.intersects(buffer_geom)].copy()
+    
+    # 排除自身
+    if exclude_self and 'uid' in target_unit.index:
+        target_uid = target_unit['uid']
+        overlapping_units = overlapping_units[overlapping_units['uid'] != target_uid]
+    
+    if len(overlapping_units) == 0:
+        return 0.0
+    
+    # 计算周边public space的flow_prediction加权平均（按面积加权）
+    total_weighted_flow = 0.0
+    total_area = 0.0
+    
+    for idx, unit in overlapping_units.iterrows():
+        flow = unit.get('flow_prediction', 0.0)
+        area = unit.get('area', 0.0)
+        if area > 0 and flow > 0:
+            total_weighted_flow += flow * area
+            total_area += area
+    
+    if total_area > 0:
+        return total_weighted_flow / total_area
+    else:
+        return 0.0
+
+
 def compute_flow_from_complexity(
     collection: SpaceUnitCollection,
     buffer_distance: float = 10.0,
     base_flow: float = 0.0,
     diversity_weight: float = 0.5,
     weighted_sum_weight: float = 0.5,
-    normalize: bool = True
+    normalize: bool = True,
+    self_weight: float = 0.6,
+    surrounding_weight: float = 0.4
 ) -> SpaceUnitCollection:
     """
     基于周边图块功能复杂度计算flow_prediction
     只针对public_space类型的单元（walkable_place）
+    
+    新的计算方式：
+    1. 第一遍：计算每个public space基于周边shop的复杂度，作为初始flow_prediction
+    2. 第二遍：对于每个public space，计算：
+       final_flow = self_weight * 自己的初始flow + surrounding_weight * 周边public space的flow加权平均
     
     Args:
         collection: SpaceUnitCollection对象
@@ -207,6 +267,8 @@ def compute_flow_from_complexity(
         diversity_weight: 多样性权重，默认0.5
         weighted_sum_weight: 加权总和权重，默认0.5
         normalize: 是否归一化到[0, 1]范围
+        self_weight: 当前public space自己的权重，默认0.6
+        surrounding_weight: 周边public space的权重，默认0.4
         
     Returns:
         collection: 更新后的SpaceUnitCollection（原地修改）
@@ -230,7 +292,7 @@ def compute_flow_from_complexity(
         print("警告: 没有public_space类型的单元")
         return collection
     
-    # 计算每个public_space单元的复杂度
+    # ========== 第一遍：计算每个public_space单元基于周边shop的初始复杂度 ==========
     complexity_scores = []
     public_space_indices = []
     
@@ -262,12 +324,36 @@ def compute_flow_from_complexity(
         else:
             complexity_scores = np.zeros_like(scores_array)
     
-    # 只更新public_space单元的flow_prediction
+    # 先设置初始flow_prediction（基于周边shop的复杂度）
+    initial_flows = {}
     for idx, score in zip(public_space_indices, complexity_scores):
-        all_units.loc[idx, 'flow_prediction'] = base_flow + float(score)
+        initial_flow = base_flow + float(score)
+        all_units.loc[idx, 'flow_prediction'] = initial_flow
+        initial_flows[idx] = initial_flow
+    
+    # ========== 第二遍：考虑周边public space的影响，更新flow_prediction ==========
+    final_flows = {}
+    for idx, unit in public_space_units.iterrows():
+        # 获取自己的初始flow
+        self_flow = initial_flows.get(idx, 0.0)
+        
+        # 计算周边public space的flow_prediction加权平均
+        surrounding_flow = compute_surrounding_public_space_flow(
+            target_unit=unit,
+            all_units=all_units,
+            buffer_distance=buffer_distance,
+            exclude_self=True
+        )
+        
+        # 最终flow = self_weight * 自己的flow + surrounding_weight * 周边public space的flow
+        final_flow = self_weight * self_flow + surrounding_weight * surrounding_flow
+        final_flows[idx] = final_flow
+    
+    # 更新所有public_space单元的flow_prediction
+    for idx, final_flow in final_flows.items():
+        all_units.loc[idx, 'flow_prediction'] = final_flow
     
     # 再次确保所有shop单元的flow_prediction都为0（双重保险）
-    # 使用 mask 直接修改，确保修改生效
     shop_mask = all_units['unit_type'] == 'shop'
     if shop_mask.any():
         all_units.loc[shop_mask, 'flow_prediction'] = 0.0

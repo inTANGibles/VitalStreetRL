@@ -27,6 +27,7 @@ pyyaml>=6.0
 # 可视化
 matplotlib>=3.5.0
 seaborn>=0.12.0  # 可选，用于高级可视化
+tensorboard>=2.10.0  # TensorBoard日志记录
 
 # 测试
 pytest>=7.0.0

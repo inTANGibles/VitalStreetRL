@@ -19,9 +19,19 @@ train:
   # 训练设置
   n_episodes: 100
   log_interval: 1
-  save_interval: 10
+  save_by_episode: true  # true=按episode保存，false=按步数保存
+  save_interval: 1  # 如果save_by_episode=true，表示每N个episode保存；如果false，表示每N步保存
   checkpoint_dir: "./checkpoints"
   log_dir: "./logs"  # 训练日志目录（monitor.csv将保存在这里）
+  tensorboard_log: "./logs/tensorboard"  # TensorBoard日志目录（可选，如果设置则启用TensorBoard）
+  
+  # Render图像日志（使用TensorBoard记录和本地保存）
+  render_log:
+    enabled: true  # 是否启用render日志
+    log_every_n_episodes: 1  # 每N个episode记录一次render图像
+    log_every_n_steps: null  # 每N步记录一次（可选，null表示不按步数记录）
+    save_dir: "./logs/frames"  # 本地保存目录（可选，如果设置则保存图像到本地）
+    verbose: true  # 是否显示详细日志（建议开启以便调试）
   
   # 网络结构
   policy:
