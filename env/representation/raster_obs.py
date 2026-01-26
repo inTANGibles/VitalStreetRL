@@ -263,17 +263,48 @@ class RasterObservation:
             }
         else:
             # 计算所有几何的边界
-            bounds = space_units.total_bounds  # [x_min, y_min, x_max, y_max]
-            
-            x_range = bounds[2] - bounds[0]
-            y_range = bounds[3] - bounds[1]
-            
-            self._bounds = {
-                'x_min': bounds[0] - x_range * padding,
-                'x_max': bounds[2] + x_range * padding,
-                'y_min': bounds[1] - y_range * padding,
-                'y_max': bounds[3] + y_range * padding
-            }
+            try:
+                bounds = space_units.total_bounds  # [x_min, y_min, x_max, y_max]
+                
+                # 检查边界是否有效
+                if not np.isfinite(bounds).all() or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                    print(f"[警告] 无效的边界框: {bounds}, 使用默认边界")
+                    self._bounds = {
+                        'x_min': 0.0,
+                        'x_max': 1000.0,
+                        'y_min': 0.0,
+                        'y_max': 1000.0
+                    }
+                    return
+                
+                x_range = bounds[2] - bounds[0]
+                y_range = bounds[3] - bounds[1]
+                
+                # 检查范围是否有效
+                if x_range <= 0 or y_range <= 0 or not np.isfinite(x_range) or not np.isfinite(y_range):
+                    print(f"[警告] 无效的边界范围: x_range={x_range}, y_range={y_range}, 使用默认边界")
+                    self._bounds = {
+                        'x_min': 0.0,
+                        'x_max': 1000.0,
+                        'y_min': 0.0,
+                        'y_max': 1000.0
+                    }
+                    return
+                
+                self._bounds = {
+                    'x_min': bounds[0] - x_range * padding,
+                    'x_max': bounds[2] + x_range * padding,
+                    'y_min': bounds[1] - y_range * padding,
+                    'y_max': bounds[3] + y_range * padding
+                }
+            except Exception as e:
+                print(f"[错误] 计算边界框失败: {e}, 使用默认边界")
+                self._bounds = {
+                    'x_min': 0.0,
+                    'x_max': 1000.0,
+                    'y_min': 0.0,
+                    'y_max': 1000.0
+                }
         
         # 计算变换矩阵（世界坐标 -> 栅格坐标）
         x_range = self._bounds['x_max'] - self._bounds['x_min']
@@ -329,8 +360,17 @@ class RasterObservation:
         
         # 计算多边形的边界框（栅格坐标）- shapely操作
         try:
+            # 检查几何对象是否有效
+            if not hasattr(geometry, 'bounds') or geometry.is_empty:
+                return raster
+            
             bounds = geometry.bounds  # (x_min, y_min, x_max, y_max) - 可能崩溃点
+            
+            # 检查边界是否有效
+            if len(bounds) != 4 or not all(np.isfinite(bounds)) or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                return raster
         except Exception as e:
+            print(f"[警告] 获取几何边界失败: {e}, 跳过此多边形")
             return raster
         
         i_min, j_min = self._world_to_raster(bounds[0], bounds[1])
@@ -366,16 +406,42 @@ class RasterObservation:
         world_y_flat = world_y.flatten()
         
         # 批量检查点是否在多边形内（使用prepared geometry加速）- 大量shapely操作，可能崩溃点
+        # 限制处理的点数，避免内存溢出
+        max_points = 10000  # 限制最大点数
+        if len(world_x_flat) > max_points:
+            # 如果点数太多，只处理边界框内的部分区域
+            print(f"[警告] 栅格化点数过多 ({len(world_x_flat)}), 跳过此多边形以避免内存错误")
+            return raster
+        
         try:
-            if hasattr(prepared_geom, 'contains'):
-                # 使用prepared geometry
-                points = [Point(x, y) for x, y in zip(world_x_flat, world_y_flat)]  # 创建Point对象
-                contains_mask = np.array([prepared_geom.contains(p) for p in points])  # 可能崩溃点
-            else:
-                # 回退到普通geometry
-                points = [Point(x, y) for x, y in zip(world_x_flat, world_y_flat)]  # 创建Point对象
-                contains_mask = np.array([geometry.contains(p) or geometry.touches(p) for p in points])  # 可能崩溃点
+            # 使用更安全的方式：批量创建Point对象并检查
+            contains_mask = np.zeros(len(world_x_flat), dtype=bool)
+            
+            # 分批处理，避免一次性创建太多对象
+            batch_size = 1000
+            for i in range(0, len(world_x_flat), batch_size):
+                end_idx = min(i + batch_size, len(world_x_flat))
+                batch_x = world_x_flat[i:end_idx]
+                batch_y = world_y_flat[i:end_idx]
+                
+                # 创建Point对象并检查
+                try:
+                    if hasattr(prepared_geom, 'contains'):
+                        # 使用prepared geometry
+                        batch_points = [Point(x, y) for x, y in zip(batch_x, batch_y)]
+                        batch_mask = [prepared_geom.contains(p) for p in batch_points]
+                    else:
+                        # 回退到普通geometry
+                        batch_points = [Point(x, y) for x, y in zip(batch_x, batch_y)]
+                        batch_mask = [geometry.contains(p) or geometry.touches(p) for p in batch_points]
+                    
+                    contains_mask[i:end_idx] = batch_mask
+                except Exception as batch_e:
+                    # 如果批次处理失败，跳过这个批次
+                    print(f"[警告] 批次 {i//batch_size} 处理失败: {batch_e}, 跳过")
+                    continue
         except Exception as e:
+            print(f"[错误] 栅格化多边形失败: {e}, 返回空栅格")
             return raster
         
         # 重塑为原始形状并填充值
