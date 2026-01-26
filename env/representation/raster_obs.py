@@ -310,12 +310,30 @@ class RasterObservation:
         x_range = self._bounds['x_max'] - self._bounds['x_min']
         y_range = self._bounds['y_max'] - self._bounds['y_min']
         
+        # 检查范围是否有效，避免除零错误
+        if x_range <= 0 or y_range <= 0 or not np.isfinite(x_range) or not np.isfinite(y_range):
+            print(f"[错误] 无效的边界范围用于计算变换: x_range={x_range}, y_range={y_range}")
+            # 使用默认值
+            x_range = max(x_range, 1.0)
+            y_range = max(y_range, 1.0)
+        
         self._transform = {
             'x_scale': self.resolution[1] / x_range,  # W / x_range
             'y_scale': self.resolution[0] / y_range,  # H / y_range
             'x_min': self._bounds['x_min'],
             'y_min': self._bounds['y_min']
         }
+        
+        # 检查变换是否有效
+        if not np.isfinite(self._transform['x_scale']) or not np.isfinite(self._transform['y_scale']):
+            print(f"[错误] 无效的变换参数: x_scale={self._transform['x_scale']}, y_scale={self._transform['y_scale']}")
+            # 使用默认变换
+            self._transform = {
+                'x_scale': self.resolution[1] / 1000.0,
+                'y_scale': self.resolution[0] / 1000.0,
+                'x_min': 0.0,
+                'y_min': 0.0
+            }
     
     def _world_to_raster(self, x: float, y: float) -> Tuple[int, int]:
         """
@@ -388,10 +406,20 @@ class RasterObservation:
         # 使用prepared geometry加速（如果可用）- shapely操作
         try:
             from shapely.prepared import prep
+            # 检查几何对象是否有效
+            if geometry is None or not hasattr(geometry, 'is_valid') or not geometry.is_valid:
+                # 如果几何对象无效，尝试修复
+                try:
+                    geometry = geometry.buffer(0)  # 尝试修复无效几何
+                except:
+                    print(f"[警告] 几何对象无效且无法修复，跳过")
+                    return raster
+            
             prepared_geom = prep(geometry)  # 可能崩溃点
         except ImportError:
             prepared_geom = geometry
         except Exception as e:
+            print(f"[警告] 准备几何对象失败: {e}, 使用原始几何对象")
             prepared_geom = geometry
         
         # 批量生成栅格点坐标
@@ -445,8 +473,33 @@ class RasterObservation:
             return raster
         
         # 重塑为原始形状并填充值
-        contains_mask = contains_mask.reshape(i_coords.shape)
-        raster[i_min:i_max+1, j_min:j_max+1] = np.where(contains_mask, value, 0.0)
+        try:
+            contains_mask = contains_mask.reshape(i_coords.shape)
+            # 再次检查索引范围（防止在计算过程中发生变化）
+            if i_min >= 0 and i_max < self.resolution[0] and j_min >= 0 and j_max < self.resolution[1]:
+                raster[i_min:i_max+1, j_min:j_max+1] = np.where(contains_mask, value, 0.0)
+            else:
+                # 如果索引超出范围，只填充有效部分
+                i_min_safe = max(0, i_min)
+                i_max_safe = min(self.resolution[0] - 1, i_max)
+                j_min_safe = max(0, j_min)
+                j_max_safe = min(self.resolution[1] - 1, j_max)
+                
+                if i_min_safe <= i_max_safe and j_min_safe <= j_max_safe:
+                    # 计算需要提取的 mask 部分
+                    mask_i_start = i_min_safe - i_min
+                    mask_i_end = mask_i_start + (i_max_safe - i_min_safe + 1)
+                    mask_j_start = j_min_safe - j_min
+                    mask_j_end = mask_j_start + (j_max_safe - j_min_safe + 1)
+                    
+                    if (mask_i_end <= contains_mask.shape[0] and mask_j_end <= contains_mask.shape[1] and
+                        mask_i_start >= 0 and mask_j_start >= 0):
+                        raster[i_min_safe:i_max_safe+1, j_min_safe:j_max_safe+1] = np.where(
+                            contains_mask[mask_i_start:mask_i_end, mask_j_start:mask_j_end], value, 0.0
+                        )
+        except Exception as e:
+            print(f"[错误] 填充栅格值失败: {e}, 返回空栅格")
+            return raster
         
         return raster
     
