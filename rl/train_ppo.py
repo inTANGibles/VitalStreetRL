@@ -335,35 +335,30 @@ class VitalStreetEnv(gym.Env):
     def step(self, action):
         """执行一步（带异常处理防止内存访问错误）"""
         step_idx = self.step_count
-        print(f"[DEBUG Step {step_idx}] ========== 开始执行step ==========")
         
         try:
             # ========== 1. 解码动作 ==========
-            print(f"[DEBUG Step {step_idx}] [1/6] 开始 decode_action()")
             action = np.asarray(action).flatten()
+            from env.action_space import ActionType
             try:
                 action_obj = self.action_space_manager.decode(action, self.state)
-                print(f"[DEBUG Step {step_idx}] [1/6] ✓ decode_action() 完成: {action_obj.type.name if hasattr(action_obj.type, 'name') else action_obj.type}")
+                # 检查是否解码为 NO_OP（target_id=None）
+                if action_obj.type == ActionType.NO_OP:
+                    print(f"[警告] Step {step_idx}: 动作解码为NO_OP, 原始动作: {action}, "
+                          f"可能原因: 动作类型/索引超出范围或单元类型不匹配")
             except Exception as e:
-                print(f"[DEBUG Step {step_idx}] [1/6] ✗ decode_action() 失败: {e}, action={action}")
                 # 使用NO_OP作为fallback
                 from env.action_space import Action, ActionType
+                print(f"[错误] Step {step_idx}: 动作解码异常: {e}, 原始动作: {action}")
                 action_obj = Action(type=ActionType.NO_OP, target_id=None, params={})
-                print(f"[DEBUG Step {step_idx}] [1/6] 使用NO_OP作为fallback")
             
             # ========== 2. 执行转移（包含apply_action_to_state, rebuild_graph, compute_flow） ==========
-            print(f"[DEBUG Step {step_idx}] [2/6] 开始 apply_action_to_state()")
             prev_state = self.state
             try:
-                print(f"[DEBUG Step {step_idx}] [2/6] 调用 transition.step()...")
                 next_state, transition_info = self.transition.step(self.state, action_obj)
-                print(f"[DEBUG Step {step_idx}] [2/6] ✓ transition.step() 完成")
                 self.state = next_state
-                print(f"[DEBUG Step {step_idx}] [2/6] ✓ apply_action_to_state() 完成")
             except Exception as e:
-                print(f"[DEBUG Step {step_idx}] [2/6] ✗ apply_action_to_state() 失败: {e}")
                 import traceback
-                print(f"[DEBUG Step {step_idx}] [2/6] 堆栈跟踪:\n{traceback.format_exc()}")
                 # 如果转移失败，保持当前状态，但标记为done
                 next_state = self.state
                 transition_info = {'error': str(e)}
@@ -373,29 +368,22 @@ class VitalStreetEnv(gym.Env):
                 return obs, -100.0, done, truncated, {'error': 'transition_failed'}
             
             # ========== 3. 计算奖励 ==========
-            print(f"[DEBUG Step {step_idx}] [3/6] 开始 compute_reward()")
             try:
-                print(f"[DEBUG Step {step_idx}] [3/6] 调用 reward_calculator.compute()...")
                 reward, reward_terms = self.reward_calculator.compute(
                     state=prev_state,
                     action=action_obj,
                     next_state=next_state
                 )
-                print(f"[DEBUG Step {step_idx}] [3/6] ✓ reward_calculator.compute() 完成")
                 # 确保reward是标量
                 reward = float(reward)
                 if not isinstance(reward_terms, dict):
                     reward_terms = {'total': reward}
-                print(f"[DEBUG Step {step_idx}] [3/6] ✓ compute_reward() 完成: reward={reward:.3f}")
             except Exception as e:
-                print(f"[DEBUG Step {step_idx}] [3/6] ✗ compute_reward() 失败: {e}")
                 import traceback
-                print(f"[DEBUG Step {step_idx}] [3/6] 堆栈跟踪:\n{traceback.format_exc()}")
                 reward = 0.0
                 reward_terms = {'error': str(e), 'total': 0.0}
             
             # ========== 4. 检查终止条件 ==========
-            print(f"[DEBUG Step {step_idx}] [4/6] 开始 check_termination()")
             # 累计episode奖励
             self.episode_reward_sum += reward
             
@@ -407,13 +395,9 @@ class VitalStreetEnv(gym.Env):
                 self.history.pop(0)
             
             try:
-                print(f"[DEBUG Step {step_idx}] [4/6] 调用 termination_checker.check()...")
                 done, reason = self.termination_checker.check(next_state, self.history)
-                print(f"[DEBUG Step {step_idx}] [4/6] ✓ check_termination() 完成: done={done}, reason={reason}")
             except Exception as e:
-                print(f"[DEBUG Step {step_idx}] [4/6] ✗ check_termination() 失败: {e}")
                 import traceback
-                print(f"[DEBUG Step {step_idx}] [4/6] 堆栈跟踪:\n{traceback.format_exc()}")
                 done = self.step_count >= self.max_steps
                 reason = 'error'
             
@@ -426,10 +410,9 @@ class VitalStreetEnv(gym.Env):
             if step_idx % self.print_interval == 0 or done:
                 action_type_str = action_obj.type.name if hasattr(action_obj.type, 'name') else str(action_obj.type)
                 reward_vitality = reward_terms.get('vitality', 0.0) if isinstance(reward_terms, dict) else 0.0
-                reward_cost = reward_terms.get('cost', 0.0) if isinstance(reward_terms, dict) else 0.0
                 reward_violation = reward_terms.get('violation', 0.0) if isinstance(reward_terms, dict) else 0.0
                 print(f"  Step {step_idx:3d} | 动作: {action_type_str:25s} | "
-                      f"奖励: {reward:7.3f} (活力:{reward_vitality:6.3f}, 成本:{reward_cost:6.3f}, 违规:{reward_violation:6.3f}) | "
+                      f"奖励: {reward:7.3f} (活力:{reward_vitality:6.3f}, 违规:{reward_violation:6.3f}) | "
                       f"累计: {self.episode_reward_sum:7.3f}")
             
             # Episode结束时打印总结
@@ -438,34 +421,22 @@ class VitalStreetEnv(gym.Env):
                       f"累计奖励: {self.episode_reward_sum:.3f} | 终止原因: {reason}")
             
             # ========== 5. 编码观测（get_observation） ==========
-            print(f"[DEBUG Step {step_idx}] [5/6] 开始 get_observation()")
             try:
-                print(f"[DEBUG Step {step_idx}] [5/6] 调用 raster_obs.encode()...")
                 obs = self.raster_obs.encode(next_state)
-                print(f"[DEBUG Step {step_idx}] [5/6] ✓ raster_obs.encode() 完成")
                 # 确保obs是正确的形状和类型
-                print(f"[DEBUG Step {step_idx}] [5/6] 转换obs为numpy数组...")
                 obs = np.asarray(obs, dtype=np.float32)
-                print(f"[DEBUG Step {step_idx}] [5/6] ✓ numpy转换完成, shape={obs.shape}")
                 if obs.shape != self.observation_space.shape:
-                    print(f"[DEBUG Step {step_idx}] [5/6] 警告: 观测形状不匹配: 期望 {self.observation_space.shape}, 得到 {obs.shape}")
                     # 尝试reshape或使用默认观测
                     if obs.size == np.prod(self.observation_space.shape):
                         obs = obs.reshape(self.observation_space.shape)
-                        print(f"[DEBUG Step {step_idx}] [5/6] ✓ reshape完成")
                     else:
                         obs = self.observation_space.sample()
-                        print(f"[DEBUG Step {step_idx}] [5/6] 使用默认观测")
-                print(f"[DEBUG Step {step_idx}] [5/6] ✓ get_observation() 完成")
             except Exception as e:
-                print(f"[DEBUG Step {step_idx}] [5/6] ✗ get_observation() 失败: {e}")
                 import traceback
-                print(f"[DEBUG Step {step_idx}] [5/6] 堆栈跟踪:\n{traceback.format_exc()}")
                 # 使用默认观测
                 obs = self.observation_space.sample()
             
             # ========== 6. 构建返回信息 ==========
-            print(f"[DEBUG Step {step_idx}] [6/6] 开始 build_info()")
             info = {
                 'step': step_idx,
                 'episode': {'r': reward},
@@ -473,15 +444,12 @@ class VitalStreetEnv(gym.Env):
                 'termination_reason': reason,
                 'transition_info': transition_info
             }
-            print(f"[DEBUG Step {step_idx}] [6/6] ✓ build_info() 完成")
-            print(f"[DEBUG Step {step_idx}] ========== step执行完成 ==========")
             
             return obs, reward, done, truncated, info
             
         except Exception as e:
             # 捕获所有未预期的错误
             import traceback
-            print(f"[DEBUG Step {step_idx}] ========== step方法异常 ==========")
             print(f"[严重错误] step方法异常: {e}")
             print(traceback.format_exc())
             # 返回安全的默认值

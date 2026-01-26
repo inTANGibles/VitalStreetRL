@@ -157,42 +157,28 @@ class RasterObservation:
                 如果设置了target_resolution，会自动填充到目标尺寸
         """
         step_idx = state.step_idx if hasattr(state, 'step_idx') else 0
-        print(f"[DEBUG Observation Step {step_idx}] [5.1] RasterObservation.encode() 开始")
         
         # 如果分辨率是auto，先计算分辨率
         if self.resolution is None:
-            print(f"[DEBUG Observation Step {step_idx}] [5.1.1] 计算自动分辨率...")
             self._compute_auto_resolution(state)
-            print(f"[DEBUG Observation Step {step_idx}] [5.1.1] ✓ 自动分辨率计算完成: {self.resolution}")
         
         # 计算边界框（如果还没有缓存）
         if self._bounds is None:
-            print(f"[DEBUG Observation Step {step_idx}] [5.1.2] 计算边界框 (可能涉及shapely几何操作)...")
             self._compute_bounds(state)
-            print(f"[DEBUG Observation Step {step_idx}] [5.1.2] ✓ 边界框计算完成")
         
         # 为每个通道创建栅格
-        print(f"[DEBUG Observation Step {step_idx}] [5.1.3] 开始渲染通道 (可能涉及shapely几何操作)...")
         obs_channels = []
         for i, channel_name in enumerate(self.channels):
-            print(f"[DEBUG Observation Step {step_idx}] [5.1.3.{i+1}] 渲染通道 '{channel_name}'...")
             channel_data = self._render_channel(state, channel_name)
             obs_channels.append(channel_data)
-            print(f"[DEBUG Observation Step {step_idx}] [5.1.3.{i+1}] ✓ 通道 '{channel_name}' 渲染完成")
-        print(f"[DEBUG Observation Step {step_idx}] [5.1.3] ✓ 所有通道渲染完成")
         
         # 堆叠为多通道数组 (C, H, W)
-        print(f"[DEBUG Observation Step {step_idx}] [5.1.4] 堆叠通道...")
         obs = np.stack(obs_channels, axis=0).astype(np.float32)
-        print(f"[DEBUG Observation Step {step_idx}] [5.1.4] ✓ 通道堆叠完成, shape={obs.shape}")
         
         # 如果设置了target_resolution，填充到目标尺寸
         if self.target_resolution is not None:
-            print(f"[DEBUG Observation Step {step_idx}] [5.1.5] 填充到目标分辨率 {self.target_resolution}...")
             obs = self._pad_to_target_resolution(obs)
-            print(f"[DEBUG Observation Step {step_idx}] [5.1.5] ✓ 填充完成, shape={obs.shape}")
         
-        print(f"[DEBUG Observation Step {step_idx}] [5.1] ✓ RasterObservation.encode() 完成")
         return obs
     
     def _pad_to_target_resolution(self, obs: np.ndarray) -> np.ndarray:
@@ -217,6 +203,7 @@ class RasterObservation:
         padded = np.zeros(target_shape, dtype=obs.dtype)
         h_start = (target_h - h) // 2
         w_start = (target_w - w) // 2
+        
         padded[:, h_start:h_start+h, w_start:w_start+w] = obs
         
         return padded
@@ -344,7 +331,6 @@ class RasterObservation:
         try:
             bounds = geometry.bounds  # (x_min, y_min, x_max, y_max) - 可能崩溃点
         except Exception as e:
-            print(f"[DEBUG] _rasterize_polygon: geometry.bounds 失败: {e}")
             return raster
         
         i_min, j_min = self._world_to_raster(bounds[0], bounds[1])
@@ -366,7 +352,6 @@ class RasterObservation:
         except ImportError:
             prepared_geom = geometry
         except Exception as e:
-            print(f"[DEBUG] _rasterize_polygon: prep(geometry) 失败: {e}")
             prepared_geom = geometry
         
         # 批量生成栅格点坐标
@@ -391,7 +376,6 @@ class RasterObservation:
                 points = [Point(x, y) for x, y in zip(world_x_flat, world_y_flat)]  # 创建Point对象
                 contains_mask = np.array([geometry.contains(p) or geometry.touches(p) for p in points])  # 可能崩溃点
         except Exception as e:
-            print(f"[DEBUG] _rasterize_polygon: 点包含检查失败: {e}, 跳过此多边形")
             return raster
         
         # 重塑为原始形状并填充值

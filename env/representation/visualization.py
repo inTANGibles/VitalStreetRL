@@ -79,6 +79,7 @@ def visualize_raster_channels(
         target_H, target_W = 256, 256
     else:
         # 使用传统模式（灵活尺寸）
+        print(f"[Visualization] Warning: maintain_256x256=False, using flexible size mode (current obs size: {H}x{W})")
         if figsize is None:
             fig_width = n_channels * 5
             fig_height = 5
@@ -137,9 +138,9 @@ def visualize_raster_channels(
             # 传统模式
             im = ax.imshow(channel_data, cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
         
-        ax.set_title(f'通道 {i+1}: {channel_name}', fontsize=10 if maintain_256x256 else 12, fontweight='bold')
-        ax.set_xlabel('X (像素)')
-        ax.set_ylabel('Y (像素)')
+        ax.set_title(f'Channel {i+1}: {channel_name}', fontsize=10 if maintain_256x256 else 12, fontweight='bold')
+        ax.set_xlabel('X (pixels)')
+        ax.set_ylabel('Y (pixels)')
         ax.grid(True, alpha=0.3)
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     
@@ -159,15 +160,15 @@ def visualize_raster_channels(
             import os
             if os.path.exists(output_path):
                 file_size = os.path.getsize(output_path)
-                print(f"可视化图像已保存到: {output_path} ({file_size} bytes)")
+                print(f"Visualization image saved to: {output_path} ({file_size} bytes)")
             else:
-                print(f"警告: 保存命令执行但文件不存在: {output_path}")
+                print(f"Warning: Save command executed but file does not exist: {output_path}")
             if return_figure:
                 return fig
             plt.close(fig)
             return None
         except Exception as e:
-            print(f"保存图像失败: {e}")
+            print(f"Failed to save image: {e}")
             import traceback
             traceback.print_exc()
             if return_figure:

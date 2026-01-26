@@ -1,4 +1,15 @@
 """主入口：训练与评估"""
+import os
+# 解决 OpenMP 冲突：在导入其他库之前设置环境变量
+# 这可以防止多个库（NumPy、PyTorch等）同时初始化 OpenMP 运行时
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+# 设置 OpenMP 线程数，避免过度并行化
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
+# 禁用 OpenMP 警告（可选，如果上述设置已解决问题）
+# os.environ['KMP_WARNINGS'] = '0'
+
 import argparse
 import yaml
 from pathlib import Path

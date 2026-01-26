@@ -137,27 +137,27 @@ def plot_training_curve(df: pd.DataFrame, output_path: Optional[str] = None):
         episode_idx = range(len(df))
         
         # 奖励曲线
-        axes[0].plot(episode_idx, df['r'], alpha=0.6, label='Episode奖励')
+        axes[0].plot(episode_idx, df['r'], alpha=0.6, label='Episode Reward')
         if len(df) > 10:
             # 移动平均
             window = min(10, len(df) // 10)
             rolling_mean = df['r'].rolling(window=window, center=True).mean()
-            axes[0].plot(episode_idx, rolling_mean, 'r-', linewidth=2, label=f'{window}期移动平均')
+            axes[0].plot(episode_idx, rolling_mean, 'r-', linewidth=2, label=f'{window}-Episode Moving Average')
         axes[0].set_xlabel('Episode')
-        axes[0].set_ylabel('累计奖励')
-        axes[0].set_title('训练奖励曲线')
+        axes[0].set_ylabel('Cumulative Reward')
+        axes[0].set_title('Training Reward Curve')
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
         
         # Episode长度曲线
-        axes[1].plot(episode_idx, df['l'], alpha=0.6, label='Episode长度')
+        axes[1].plot(episode_idx, df['l'], alpha=0.6, label='Episode Length')
         if len(df) > 10:
             window = min(10, len(df) // 10)
             rolling_mean = df['l'].rolling(window=window, center=True).mean()
-            axes[1].plot(episode_idx, rolling_mean, 'r-', linewidth=2, label=f'{window}期移动平均')
+            axes[1].plot(episode_idx, rolling_mean, 'r-', linewidth=2, label=f'{window}-Episode Moving Average')
         axes[1].set_xlabel('Episode')
-        axes[1].set_ylabel('步数')
-        axes[1].set_title('Episode长度曲线')
+        axes[1].set_ylabel('Steps')
+        axes[1].set_title('Episode Length Curve')
         axes[1].legend()
         axes[1].grid(True, alpha=0.3)
         
