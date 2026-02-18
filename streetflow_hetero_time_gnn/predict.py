@@ -51,8 +51,9 @@ def predict(
         device=device,
     )
     data = data.to(device)
-    model = HeteroSAGE(in_channels=11, hidden_channels=64, out_channels=1).to(device)
     ckpt = torch.load(checkpoint_dir / "best.pt", map_location=device)
+    hidden = int(ckpt.get("hidden_channels", 64))
+    model = HeteroSAGE(in_channels=11, hidden_channels=hidden, out_channels=1).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     with torch.no_grad():
@@ -122,8 +123,9 @@ def predict_shop_converted_to_public(
     center_idx = public_ids.index(shop_node_id)
     sub, center_new = extract_2hop_subgraph(data, "public", center_idx)
     sub = sub.to(device)
-    model = HeteroSAGE(in_channels=11, hidden_channels=64, out_channels=1).to(device)
     ckpt = torch.load(checkpoint_dir / "best.pt", map_location=device)
+    hidden = int(ckpt.get("hidden_channels", 64))
+    model = HeteroSAGE(in_channels=11, hidden_channels=hidden, out_channels=1).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     with torch.no_grad():
