@@ -4,6 +4,11 @@
 Full pipeline script mirroring 01_pipeline_visualization.ipynb.
 Saves all figures and logs to --out_dir (default: outputs/run_<timestamp>).
 """
+# Avoid OMP Error #15 when PyTorch and other libs both ship OpenMP (libiomp5md.dll).
+# Must be set before importing torch/matplotlib/numpy.
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import argparse
 import json
 import subprocess
