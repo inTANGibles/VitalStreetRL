@@ -2,7 +2,7 @@
 from typing import Dict, Any, Tuple
 import numpy as np
 from collections import Counter
-from env.world_state import WorldState
+from geo.world_state import WorldState
 
 
 class VitalityMetrics:

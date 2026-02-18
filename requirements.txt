@@ -1,14 +1,10 @@
+# STGNN项目依赖（已移除RL相关包）
+
 # 核心依赖
 numpy>=1.21.0
 torch>=1.12.0
 
-# 强化学习
-gymnasium>=0.28.0
-stable-baselines3>=2.0.0
-tqdm>=4.64.0  # 进度条
-rich>=12.0.0  # 进度条显示
-
-# 图处理
+# 图处理（STGNN需要）
 networkx>=2.8
 torch-geometric>=2.0.0  # 用于GNN
 
@@ -27,7 +23,9 @@ pyyaml>=6.0
 # 可视化
 matplotlib>=3.5.0
 seaborn>=0.12.0  # 可选，用于高级可视化
-tensorboard>=2.10.0  # TensorBoard日志记录
+
+# 超参数搜索
+optuna>=3.0.0
 
 # 测试
 pytest>=7.0.0

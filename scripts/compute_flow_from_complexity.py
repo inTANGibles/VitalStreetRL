@@ -27,8 +27,8 @@ project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from env.geo.space_unit import SpaceUnitCollection
-from env.geo.business_type import BusinessCategory
+from geo.tool.space_unit import SpaceUnitCollection
+from geo.tool.business_type import BusinessCategory
 
 
 def compute_shannon_entropy(categories: List[str]) -> float:
@@ -122,10 +122,60 @@ def compute_surrounding_complexity(
             'count': 0
         }
     
-    buffer_geom = target_geometry.buffer(buffer_distance)
+    # 检查几何对象是否有效，如果无效则尝试修复
+    try:
+        if not hasattr(target_geometry, 'is_valid') or not target_geometry.is_valid:
+            # 尝试修复无效几何
+            try:
+                target_geometry = target_geometry.buffer(0)
+            except:
+                print(f"[警告] 几何对象无效且无法修复，跳过此单元")
+                return {
+                    'diversity': 0.0,
+                    'weighted_sum': 0.0,
+                    'total_area': 0.0,
+                    'count': 0
+                }
+    except Exception as e:
+        print(f"[警告] 检查几何对象有效性失败: {e}, 跳过此单元")
+        return {
+            'diversity': 0.0,
+            'weighted_sum': 0.0,
+            'total_area': 0.0,
+            'count': 0
+        }
     
-    # 找到与buffer重叠的单元
-    overlapping_units = all_units[all_units.geometry.intersects(buffer_geom)].copy()
+    # 创建buffer（添加异常处理）
+    try:
+        buffer_geom = target_geometry.buffer(buffer_distance)
+        # 检查buffer是否有效
+        if buffer_geom is None or buffer_geom.is_empty:
+            return {
+                'diversity': 0.0,
+                'weighted_sum': 0.0,
+                'total_area': 0.0,
+                'count': 0
+            }
+    except Exception as e:
+        print(f"[警告] 创建buffer失败: {e}, 跳过此单元")
+        return {
+            'diversity': 0.0,
+            'weighted_sum': 0.0,
+            'total_area': 0.0,
+            'count': 0
+        }
+    
+    # 找到与buffer重叠的单元（添加异常处理）
+    try:
+        overlapping_units = all_units[all_units.geometry.intersects(buffer_geom)].copy()
+    except Exception as e:
+        print(f"[警告] 查找重叠单元失败: {e}, 跳过此单元")
+        return {
+            'diversity': 0.0,
+            'weighted_sum': 0.0,
+            'total_area': 0.0,
+            'count': 0
+        }
     
     # 排除自身
     if exclude_self and 'uid' in target_unit.index:
@@ -403,9 +453,9 @@ def main():
     # 2. 转换为SpaceUnitCollection
     print(f"\n[2/3] 转换为SpaceUnitCollection并计算复杂度")
     try:
-        from scripts.geojson_to_raster import geojson_to_spaceunit_collection
+        from geo.world_state import WorldState
         
-        collection = geojson_to_spaceunit_collection(gdf)
+        collection = WorldState._geojson_to_spaceunit_collection(gdf)
         all_units = collection.get_all_space_units()
         print(f"  成功转换 {len(all_units)} 个空间单元")
         
