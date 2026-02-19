@@ -53,10 +53,11 @@ def _load_flows(
     Load flows. Key: (day, hour) if use_slot=False, else (day, slot_idx).
     Value: { node_id: flow }.
     """
+    assert flows_path is None or isinstance(flows_path, Path), type(flows_path)
     out = {}
     if flows_path is None or not flows_path.exists():
         return out
-    with open(flows_path, "r", encoding="utf-8") as f:
+    with open(flows_path, "r", encoding="utf-8", newline="") as f:
         for r in csv.DictReader(f):
             day = int(r["day"])
             if use_slot and "slot_idx" in r:
