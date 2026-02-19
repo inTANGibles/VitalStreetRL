@@ -1,0 +1,9 @@
+{
+  "out_dir": "D:\\Architecture\\AAA-Master\\OHMCS\\VitalStreetRL\\streetflow_hetero_time_gnn\\outputs\\run_20260218_223800",
+  "fig_dir": "D:\\Architecture\\AAA-Master\\OHMCS\\VitalStreetRL\\streetflow_hetero_time_gnn\\outputs\\run_20260218_223800\\figures",
+  "log_dir": "D:\\Architecture\\AAA-Master\\OHMCS\\VitalStreetRL\\streetflow_hetero_time_gnn\\outputs\\run_20260218_223800\\logs",
+  "best_val_mae": 1.5113452672958374,
+  "n_epochs": 200,
+  "hidden_channels": 64,
+  "lr": 0.001
+}

@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Full pipeline script mirroring 01_pipeline_visualization.ipynb.
+默认先跑 Optuna（10 轮）得到最优超参，再按最优参数训练并生成图表。
 Saves all figures and logs to --out_dir (default: outputs/run_<timestamp>).
+Usage:
+  python scripts/run_pipeline.py                    # Optuna 10 轮 + 全 pipeline
+  python scripts/run_pipeline.py --no_optuna        # 跳过 Optuna，用已有或默认超参
+  python scripts/run_pipeline.py --optuna_trials 5  # Optuna 改为 5 轮
 """
 # Avoid OMP Error #15 when PyTorch and other libs both ship OpenMP (libiomp5md.dll).
 # Must be set before importing torch/matplotlib/numpy.
@@ -34,17 +39,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.dataset import SubgraphTimeSliceDataset, get_train_val_time_slices
-from geo.tool.build_graph import build_hetero_data, load_normalizer, save_normalizer
-from models.hetero_sage import HeteroSAGE
+from geo.tool.build_graph import build_graph_data, load_normalizer, save_normalizer
+from models.sage import SAGE
 from utils.metrics import mae, rmse
 from utils.seed import set_seed
 from utils.viz import (
     plot_train_curves,
     plot_pred_vs_true,
+    plot_pred_vs_true_by_subgraph,
     plot_error_histogram,
     plot_nodes_by_value,
     plot_heatmap_choropleth,
-    plot_hetero_graph,
+    plot_graph,
 )
 
 
@@ -54,11 +60,10 @@ def train_one_epoch(model, loader, optimizer, device):
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad()
-        out = model(batch.x_dict, batch.edge_index_dict)
-        pred = out["public"].squeeze(1)
+        out = model(batch.x, batch.edge_index).squeeze(1)
         center_idx = batch.center_idx
-        pred_center = pred[center_idx : center_idx + 1]
-        y_center = batch["public"].y
+        pred_center = out[center_idx : center_idx + 1]
+        y_center = batch.y.squeeze(1)
         loss = F.l1_loss(pred_center, y_center)
         loss.backward()
         optimizer.step()
@@ -73,11 +78,10 @@ def evaluate(model, loader, device):
     all_y, all_pred, all_mask = [], [], []
     for batch in loader:
         batch = batch.to(device)
-        out = model(batch.x_dict, batch.edge_index_dict)
-        pred = out["public"].squeeze(1)
+        out = model(batch.x, batch.edge_index).squeeze(1)
         center_idx = batch.center_idx
-        pred_center = pred[center_idx : center_idx + 1]
-        all_y.append(batch["public"].y.squeeze(1).cpu())
+        pred_center = out[center_idx : center_idx + 1]
+        all_y.append(batch.y.squeeze(1).cpu())
         all_pred.append(pred_center.cpu())
         all_mask.append(torch.ones(1, dtype=torch.bool))
     y = torch.cat(all_y)
@@ -93,8 +97,8 @@ def main():
     parser.add_argument("--checkpoint_dir", type=Path, default=ROOT / "checkpoints")
     parser.add_argument("--project_root", type=Path, default=ROOT.parent, help="VitalStreetRL root for FlowData")
     parser.add_argument("--skip_csv", action="store_true", help="Skip A. Generate CSV (use existing data_dir)")
-    parser.add_argument("--run_optuna", action="store_true", help="Run Optuna before training")
-    parser.add_argument("--optuna_trials", type=int, default=5)
+    parser.add_argument("--no_optuna", action="store_true", help="Skip Optuna; use existing optuna_best_params.json or default hyperparams")
+    parser.add_argument("--optuna_trials", type=int, default=10, help="Number of Optuna trials when running Optuna (default 10)")
     parser.add_argument("--n_epochs", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--shop_to_public", type=int, default=None, help="If set, run F: predict converted shop")
@@ -151,12 +155,13 @@ def main():
         save_normalizer(train_ds.normalizer, checkpoint_dir / "normalizer.json")
     train_loader = PyGDataLoader(train_ds, batch_size=1, shuffle=True)
     val_loader = PyGDataLoader(val_ds, batch_size=1, shuffle=False)
-    feat_dim = train_ds[0]["shop"].x.shape[1]
+    feat_dim = train_ds[0].x.shape[1]
     print(f"  train={len(train_ds)}, val={len(val_ds)}, feat_dim={feat_dim}")
 
-    # ---------- Optional: Optuna ----------
+    # ---------- D.0 Optuna (default: run 10 trials, then use best params for training) ----------
+    run_optuna = not args.no_optuna
     optuna_best_params = None
-    if args.run_optuna:
+    if run_optuna:
         print("D.0 Running Optuna...")
         from scripts.optuna_tune import run_study
         run_study(data_dir=data_dir, checkpoint_dir=checkpoint_dir, n_trials=args.optuna_trials, time_slices_ratio=0.3, seed=args.seed)
@@ -173,10 +178,14 @@ def main():
     hidden_channels = (optuna_best_params or {}).get("hidden_channels", 64)
     lr = (optuna_best_params or {}).get("lr", 1e-3)
     weight_decay = (optuna_best_params or {}).get("weight_decay", 0.0)
-    n_epochs = (optuna_best_params or {}).get("n_epochs", args.n_epochs)
+    # 与 notebook 一致：n_epochs 至少 400 以便充分收敛，早停 patience=50
+    n_epochs_base = (optuna_best_params or {}).get("n_epochs", args.n_epochs)
+    n_epochs = max(n_epochs_base, 400)
+    patience = 50
+    no_improve = 0
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = HeteroSAGE(feat_dim, hidden_channels, 1).to(device)
+    model = SAGE(in_channels=feat_dim, hidden_channels=hidden_channels, out_channels=1).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     best_val_mae = float("inf")
     log_epochs, log_train_loss, log_val_mae = [], [], []
@@ -190,9 +199,15 @@ def main():
         log_val_mae.append(val_mae_)
         if val_mae_ < best_val_mae:
             best_val_mae = val_mae_
+            no_improve = 0
             torch.save({"model": model.state_dict(), "epoch": epoch, "hidden_channels": hidden_channels}, checkpoint_dir / "best.pt")
+        else:
+            no_improve += 1
         if epoch % 20 == 0:
-            print(f"  Epoch {epoch} loss={train_loss:.4f} val_mae={val_mae_:.4f} val_rmse={val_rmse_:.4f}")
+            print(f"  Epoch {epoch} loss={train_loss:.4f} val_mae={val_mae_:.4f} val_rmse={val_rmse_:.4f} best={best_val_mae:.4f}")
+        if no_improve >= patience:
+            print(f"  Early stopping at epoch {epoch} (val_mae 连续 {patience} 轮无改善)")
+            break
 
     train_log = {"epoch": log_epochs, "train_loss": log_train_loss, "val_mae": log_val_mae, "best_val_mae": best_val_mae}
     with open(log_dir / "train_log.json", "w", encoding="utf-8") as f:
@@ -210,6 +225,10 @@ def main():
     _, _, y_true, y_pred, mask = evaluate(model, val_loader, device)
     plot_pred_vs_true(y_true, y_pred, mask, out_path=fig_dir / "pred_vs_true.png")
     plt.close("all")
+    # 按静态子图聚合：同一 center 的多个时间片取平均 True / 平均 Pred，再画 Pred vs True（与 notebook 一致：用 batch.node_id[batch.center_idx]）
+    center_ids = torch.tensor([batch.node_id[batch.center_idx].item() for batch in val_loader], dtype=torch.long)
+    plot_pred_vs_true_by_subgraph(y_true, y_pred, center_ids, out_path=fig_dir / "pred_vs_true_by_subgraph.png")
+    plt.close("all")
     plot_error_histogram(y_true, y_pred, mask, out_path=fig_dir / "error_histogram.png")
     plt.close("all")
 
@@ -220,20 +239,19 @@ def main():
         edges_path = data_dir / "edges.csv"
         flows_path = data_dir / "flows.csv" if (data_dir / "flows.csv").exists() else None
         normalizer = load_normalizer(checkpoint_dir / "normalizer.json") if (checkpoint_dir / "normalizer.json").exists() else None
-        data_pred, _ = build_hetero_data(nodes_path, edges_path, flows_path, day=day, hour=12, slot_idx=slot, use_slot=True, normalizer=normalizer, label_transform=label_tf)
+        data_pred, _ = build_graph_data(nodes_path, edges_path, flows_path, day=day, hour=12, slot_idx=slot, use_slot=True, normalizer=normalizer, label_transform=label_tf)
         data_pred = data_pred.to(device)
         with torch.no_grad():
-            out = model(data_pred.x_dict, data_pred.edge_index_dict)
-        yhat_public = out["public"].squeeze(1).cpu()
-        yhat_shop = out["shop"].squeeze(1).cpu()
-        yhat_flow_all = torch.cat([yhat_shop, yhat_public])
-        public_vals = yhat_public
+            out = model(data_pred.x, data_pred.edge_index).squeeze(1)
+        yhat_all = out.cpu()
+        n_shop = data_pred.num_shop
+        public_vals = yhat_all[n_shop:]
         vmin, vmax = float(public_vals.min()), float(public_vals.max())
         gdf = gpd.read_file(street_geojson) if street_geojson.exists() else None
         if gdf is not None:
             plot_nodes_by_value(data_pred.cpu(), public_vals, title=f"Predicted flow (day={day}, slot={slot})", value_label="yhat_flow", gdf=gdf, vmin=vmin, vmax=vmax, out_path=fig_dir / "nodes_by_value.png")
             plt.close("all")
-            plot_heatmap_choropleth(gdf, yhat_flow_all.numpy(), title=f"Predicted flow heatmap (day={day}, slot={slot})", value_label="yhat_flow", smooth_with_neighbors=True, vmin=vmin, vmax=vmax, out_path=fig_dir / "heatmap_choropleth.png")
+            plot_heatmap_choropleth(gdf, yhat_all.numpy(), title=f"Predicted flow heatmap (day={day}, slot={slot})", value_label="yhat_flow", smooth_with_neighbors=True, vmin=vmin, vmax=vmax, out_path=fig_dir / "heatmap_choropleth.png")
             plt.close("all")
     else:
         print("  E2 (node map/heatmap) skipped: geopandas not available")
@@ -247,7 +265,7 @@ def main():
             day=0, hour=12, slot_idx=0, use_slot=True,
         )
         gdf = gpd.read_file(street_geojson) if (gpd is not None and street_geojson.exists()) else None
-        fig = plot_hetero_graph(sub, title=f"Subgraph: Shop {args.shop_to_public} -> Public (predicted flow {yhat_flow:.2f})", center_node=("public", center_idx), gdf=gdf)
+        fig = plot_graph(sub, title=f"Subgraph: Shop {args.shop_to_public} -> Public (predicted flow {yhat_flow:.2f})", center_node=center_idx, gdf=gdf)
         fig.savefig(fig_dir / "shop_to_public_subgraph.png", dpi=150, bbox_inches="tight")
         plt.close("all")
         with open(log_dir / "shop_to_public_result.json", "w", encoding="utf-8") as f:

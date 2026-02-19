@@ -1,0 +1,21 @@
+# GA/NSGA-II 多目标优化配置
+# 必须包含 cost_alpha / cost_beta（cost_proxy = alpha * n_shop_to_public + beta * n_change_business）
+
+max_steps: 20
+cost_alpha: 1.0   # shop_to_public 权重
+cost_beta: 0.5    # change_business 权重
+
+reward:
+  mu_violation: 1.0
+  vitality_metrics: {}
+
+transition:
+  flow:
+    buffer_distance: 10.0
+    diversity_weight: 0.5
+    weighted_sum_weight: 0.5
+
+action_space:
+  max_shops: 500
+  max_business_types: 20
+  max_total_units: 500

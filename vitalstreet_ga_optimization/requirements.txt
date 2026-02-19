@@ -1,0 +1,7 @@
+numpy>=1.20
+geopandas>=0.10
+shapely>=2.0
+pyyaml>=5.4
+pymoo>=0.6.0
+matplotlib>=3.5
+pandas>=1.3

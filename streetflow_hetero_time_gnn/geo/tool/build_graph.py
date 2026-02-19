@@ -1,7 +1,7 @@
 """
-Build HeteroData per time slice from nodes.csv, edges.csv, flows.csv.
-- Node features: 11 continuous (z-score normalized)，不含时间特征。
-- Edge types: (shop,adj,shop), (shop,adj,public), (public,adj,shop), (public,adj,public).
+Build homogeneous PyG Data per time slice from nodes.csv, edges.csv, flows.csv.
+- Node features: 11 continuous (z-score normalized)，不含时间特征。所有节点同构。
+- 节点顺序: shop 0..n_shop-1, public n_shop..N-1。仅 public 节点有标签 y/mask。
 """
 import csv
 import json
@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import torch
-from torch_geometric.data import HeteroData
+from torch_geometric.data import Data
 
 CONT_FEAT_KEYS = [
     "x", "y", "compactness", "extensibility", "concavity",
@@ -121,7 +121,7 @@ def normalize_x(x: torch.Tensor, normalizer: Optional[Dict] = None) -> torch.Ten
     return (x - mean) / std
 
 
-def build_hetero_data(
+def build_graph_data(
     nodes_path: Path,
     edges_path: Path,
     flows_path: Optional[Path] = None,
@@ -133,18 +133,16 @@ def build_hetero_data(
     label_transform: str = "log1p",
     device=None,
     shop_to_public: Optional[int] = None,
-) -> Tuple[HeteroData, Optional[Dict]]:
+) -> Tuple[Data, Optional[Dict]]:
     """
-    Build one HeteroData for (day, hour) or (day, slot_idx).
-    - use_slot: if True, use flow key (day, slot_idx).
-    - shop_to_public: if set, treat this shop node_id as public (for "convert shop to public space" scenario).
-    - Returns (data, normalizer_used). If normalizer was None, returns the new normalizer for saving.
+    构建同构 PyG Data：节点顺序 shop 0..n_shop-1, public n_shop..N-1。
+    - data.x [N, 11], data.edge_index [2, E], data.num_shop, data.num_public。
+    - 仅 public 有 data.y [n_public, 1], data.mask [n_public]；data.node_id [N]。
     """
     rows, shop_ids, public_ids = _load_nodes(nodes_path)
     edges_raw = _load_edges(edges_path)
     flows_map = _load_flows(flows_path, use_slot=use_slot)
 
-    # 若指定 shop_to_public，将该 shop 视为 public（用于 Section F：模拟 shop 改造成 public space）
     if shop_to_public is not None and shop_to_public in shop_ids:
         shop_ids = [nid for nid in shop_ids if nid != shop_to_public]
         public_ids = sorted(public_ids + [shop_to_public])
@@ -157,11 +155,9 @@ def build_hetero_data(
     shop_set = set(shop_ids)
     public_set = set(public_ids)
 
-    # Global node index: shop 0..n_shop-1, public 0..n_public-1 (local per type)
     node_id_to_idx_shop = {nid: i for i, nid in enumerate(shop_ids)}
     node_id_to_idx_public = {nid: i for i, nid in enumerate(public_ids)}
 
-    # Raw continuous features [N_shop + N_public, 11] in global order (shop then public)
     all_rows = [r for r in rows if r["node_id"] in shop_set] + [r for r in rows if r["node_id"] in public_set]
     global_id_to_idx = {}
     for i, r in enumerate(all_rows):
@@ -173,50 +169,29 @@ def build_hetero_data(
     else:
         x_cont = normalize_x(x_raw, normalizer)
 
-    # 仅使用 11 维空间特征，不含时间特征
     n_shop = len(shop_ids)
     n_public = len(public_ids)
-    x_shop = x_cont[:n_shop]
-    x_public = x_cont[n_shop:]
+    N = n_shop + n_public
 
-    data = HeteroData()
-    data["shop"].x = x_shop
-    data["public"].x = x_public
-    data["shop"].num_nodes = n_shop
-    data["public"].num_nodes = n_public
+    # 全局节点索引: 0..n_shop-1 shop, n_shop..N-1 public
+    def global_idx(nid: int):
+        if nid in node_id_to_idx_shop:
+            return node_id_to_idx_shop[nid]
+        return n_shop + node_id_to_idx_public[nid]
 
-    # Edges: only open=1, or incident to shop_to_public (so converted-node subgraph can be built from same edge list)
-    edge_lists = {
-        ("shop", "adj", "shop"): ([], []),
-        ("shop", "adj", "public"): ([], []),
-        ("public", "adj", "shop"): ([], []),
-        ("public", "adj", "public"): ([], []),
-    }
-
+    edge_src, edge_dst = [], []
     for e in edges_raw:
         u, v = e["src"], e["dst"]
         open_val = e.get("open", 1)
-        # Include edge if open=1, or if either endpoint is the converted node (shop_to_public)
         if open_val != 1 and (shop_to_public is None or (u != shop_to_public and v != shop_to_public)):
             continue
         if u not in global_id_to_idx or v not in global_id_to_idx:
             continue
-        ut, vt = nid_to_type[u], nid_to_type[v]
-        key = (ut, "adj", vt)
-        ui = node_id_to_idx_shop[u] if ut == "shop" else node_id_to_idx_public[u]
-        vi = node_id_to_idx_shop[v] if vt == "shop" else node_id_to_idx_public[v]
-        edge_lists[key][0].append(ui)
-        edge_lists[key][1].append(vi)
-        key_rev = (vt, "adj", ut)
-        edge_lists[key_rev][0].append(vi)
-        edge_lists[key_rev][1].append(ui)
+        edge_src.append(global_idx(u))
+        edge_dst.append(global_idx(v))
+        edge_src.append(global_idx(v))
+        edge_dst.append(global_idx(u))
 
-    for (st, rel, dt), (src_list, dst_list) in edge_lists.items():
-        if len(src_list) == 0:
-            continue
-        data[st, rel, dt].edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
-
-    # Labels: public only. y = log1p(flow) or flow (1-10), mask = True where flow exists
     key_ts = (day, slot_idx) if (use_slot and slot_idx is not None) else (day, hour)
     flow_dict = flows_map.get(key_ts, {})
     y_list = []
@@ -227,17 +202,24 @@ def build_hetero_data(
             if label_transform == "log1p":
                 y_list.append(math.log1p(flow))
             elif label_transform == "remap_1_10":
-                y_list.append(float(flow))  # flow 已是 1-10
+                y_list.append(float(flow))
             else:
                 y_list.append(float(flow))
             mask_list.append(1)
         else:
             y_list.append(0.0)
             mask_list.append(0)
-    data["public"].y = torch.tensor(y_list, dtype=torch.float32).unsqueeze(1)
-    data["public"].mask = torch.tensor(mask_list, dtype=torch.bool)
-    data["public"].node_id = torch.tensor(public_ids, dtype=torch.long)  # for prediction output
-    data["shop"].node_id = torch.tensor(shop_ids, dtype=torch.long)
+
+    data = Data(
+        x=x_cont,
+        edge_index=torch.tensor([edge_src, edge_dst], dtype=torch.long) if edge_src else torch.empty(2, 0, dtype=torch.long),
+    )
+    data.num_nodes = N
+    data.num_shop = n_shop
+    data.num_public = n_public
+    data.y = torch.tensor(y_list, dtype=torch.float32).unsqueeze(1)
+    data.mask = torch.tensor(mask_list, dtype=torch.bool)
+    data.node_id = torch.tensor(shop_ids + public_ids, dtype=torch.long)
 
     return data, normalizer
 

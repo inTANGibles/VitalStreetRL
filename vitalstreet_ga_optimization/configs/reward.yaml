@@ -1,0 +1,4 @@
+# 与 GA 共用：奖励/违规权重
+reward:
+  mu_violation: 1.0
+  vitality_metrics: {}

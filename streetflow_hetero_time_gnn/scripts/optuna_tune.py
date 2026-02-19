@@ -24,9 +24,14 @@ from optuna.trial import Trial
 
 from data.dataset import SubgraphTimeSliceDataset, get_train_val_time_slices
 from geo.tool.build_graph import save_normalizer
-from models.hetero_sage import HeteroSAGE
+from models.sage import SAGE
 from utils.metrics import mae, rmse
 from utils.seed import set_seed
+
+
+def _collate_batch_size1(batch):
+    """batch_size=1 时直接返回唯一样本（PyG Data）。"""
+    return batch[0]
 
 
 def train_one_epoch(model, loader, optimizer, device):
@@ -35,11 +40,10 @@ def train_one_epoch(model, loader, optimizer, device):
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad()
-        out = model(batch.x_dict, batch.edge_index_dict)
-        pred = out["public"].squeeze(1)
+        pred = model(batch.x, batch.edge_index).squeeze(1)
         center_idx = batch.center_idx
         pred_center = pred[center_idx : center_idx + 1]
-        y_center = batch["public"].y
+        y_center = batch.y.squeeze(1)
         loss = F.l1_loss(pred_center, y_center)
         loss.backward()
         optimizer.step()
@@ -54,11 +58,10 @@ def evaluate(model, loader, device):
     all_y, all_pred, all_mask = [], [], []
     for batch in loader:
         batch = batch.to(device)
-        out = model(batch.x_dict, batch.edge_index_dict)
-        pred = out["public"].squeeze(1)
+        pred = model(batch.x, batch.edge_index).squeeze(1)
         center_idx = batch.center_idx
         pred_center = pred[center_idx : center_idx + 1]
-        all_y.append(batch["public"].y.squeeze(1).cpu())
+        all_y.append(batch.y.squeeze(1).cpu())
         all_pred.append(pred_center.cpu())
         all_mask.append(torch.ones(1, dtype=torch.bool))
     y = torch.cat(all_y)
@@ -97,12 +100,16 @@ def create_objective(
             data_dir, val_slices, use_slot=True,
             normalizer=train_ds.normalizer, label_transform=label_tf,
         )
-        train_loader = DataLoader(train_ds, batch_size=1, shuffle=True)
-        val_loader = DataLoader(val_ds, batch_size=1, shuffle=False)
+        train_loader = DataLoader(
+            train_ds, batch_size=1, shuffle=True, collate_fn=_collate_batch_size1
+        )
+        val_loader = DataLoader(
+            val_ds, batch_size=1, shuffle=False, collate_fn=_collate_batch_size1
+        )
 
         in_channels = 11
         out_channels = 1
-        model = HeteroSAGE(
+        model = SAGE(
             in_channels=in_channels,
             hidden_channels=hidden_channels,
             out_channels=out_channels,

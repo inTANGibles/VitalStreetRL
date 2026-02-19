@@ -10,70 +10,61 @@ import matplotlib.pyplot as plt
 import numpy as np
 import networkx as nx
 import torch
-from torch_geometric.data import HeteroData
+from torch_geometric.data import Data
 
 
-def _pos_from_gdf(data: HeteroData, gdf: Any) -> Optional[Dict[Tuple[str, int], Tuple[float, float]]]:
-    """
-    从 GeoDataFrame 的几何质心构建节点位置。gdf 的 node_id 与 data 的 node_id 对应。
-    返回 {(node_type, idx): (x, y)}，若无法构建则返回 None。
-    """
+def _pos_from_gdf_data(data: Data, gdf: Any) -> Optional[Dict[int, Tuple[float, float]]]:
+    """从 Data.node_id 与 gdf 行索引对应得到节点位置。返回 {node_idx: (x, y)}。"""
+    if not hasattr(data, "node_id"):
+        return None
     pos = {}
     try:
         centroids = gdf.geometry.centroid
-        for nt in ["shop", "public"]:
-            if nt not in data.node_types or not hasattr(data[nt], "node_id"):
+        for i in range(data.num_nodes):
+            nid = int(data.node_id[i].item())
+            if nid >= len(centroids):
                 continue
-            for i in range(data[nt].num_nodes):
-                nid = int(data[nt].node_id[i].item())
-                if nid >= len(centroids):
-                    continue
-                p = centroids.iloc[nid]
-                if hasattr(p, "is_empty") and p.is_empty:
-                    continue
-                try:
-                    x, y = float(p.x), float(p.y)
-                    if not (math.isnan(x) or math.isnan(y)):
-                        pos[(nt, i)] = (x, y)
-                except Exception:
-                    continue
+            p = centroids.iloc[nid]
+            if hasattr(p, "is_empty") and p.is_empty:
+                continue
+            try:
+                x, y = float(p.x), float(p.y)
+                if not (math.isnan(x) or math.isnan(y)):
+                    pos[i] = (x, y)
+            except Exception:
+                continue
         return pos if len(pos) > 0 else None
     except Exception:
         return None
 
 
-def _hetero_to_nx(data: HeteroData, node_type_attr: str = "node_type") -> nx.Graph:
-    """Build undirected NetworkX graph from HeteroData; node id = (type, local_idx)."""
+def _data_to_nx(data: Data) -> nx.Graph:
+    """同构 Data -> NetworkX，节点 id 为 0..N-1。"""
     G = nx.Graph()
-    for key in data.node_types:
-        for i in range(data[key].num_nodes):
-            G.add_node((key, i), node_type=key)
-    for key in data.edge_types:
-        st, rel, dt = key
-        ei = data[st, rel, dt].edge_index
+    n = data.num_nodes if hasattr(data, "num_nodes") else data.x.size(0)
+    G.add_nodes_from(range(n))
+    if hasattr(data, "edge_index") and data.edge_index is not None and data.edge_index.numel() > 0:
+        ei = data.edge_index
         for j in range(ei.size(1)):
-            u, v = ei[0, j].item(), ei[1, j].item()
-            G.add_edge((st, u), (dt, v))
+            u, v = int(ei[0, j].item()), int(ei[1, j].item())
+            G.add_edge(u, v)
     return G
 
 
-def plot_hetero_graph(
-    data: HeteroData,
+def plot_graph(
+    data: Data,
     out_path: Optional[Path] = None,
-    title: str = "Heterogeneous Graph (shop/public)",
-    node_color_by_type: bool = True,
-    center_node: Optional[Tuple[str, int]] = None,
+    title: str = "Graph",
+    center_node: Optional[int] = None,
     gdf: Optional[Any] = None,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Figure:
     """
-    Draw graph with nodes colored by type (shop/public).
-    center_node: (node_type, local_idx) 高亮中心节点（用于子图构建可视化）。
-    gdf: GeoDataFrame，与 nodes.csv 顺序一致（node_id=行索引）。若提供，显示 GeoJSON 底图并将节点置于图块中心。
-    ax: 若提供，在此轴上绘制；否则创建新 figure。
+    同构图可视化。center_node: 子图内中心节点局部索引，高亮显示。
+    gdf: 与 nodes.csv 顺序一致时可用于底图与节点位置。
     """
-    G = _hetero_to_nx(data)
-    pos_dict = _pos_from_gdf(data, gdf) if gdf is not None else None
+    G = _data_to_nx(data)
+    pos_dict = _pos_from_gdf_data(data, gdf) if gdf is not None else None
     if pos_dict is not None and len(pos_dict) == G.number_of_nodes():
         pos = pos_dict
     else:
@@ -82,31 +73,32 @@ def plot_hetero_graph(
         fig = ax.figure
     else:
         fig, ax = plt.subplots(figsize=(8, 6))
-    if gdf is not None:
+    if gdf is not None and pos_dict is not None:
         gdf_valid = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty].copy()
         if not gdf_valid.empty:
             try:
                 gdf_valid.plot(ax=ax, facecolor="lightgray", edgecolor="gray", alpha=0.5, linewidth=0.5, aspect="equal")
             except ValueError:
-                # 当几何边界退化（如零范围）时，aspect 可能无效，跳过底图
                 pass
-    center_nx = (center_node[0], center_node[1]) if center_node else None
-    if node_color_by_type:
-        shop_nodes = [n for n in G.nodes() if G.nodes[n]["node_type"] == "shop"]
-        public_nodes = [n for n in G.nodes() if G.nodes[n]["node_type"] == "public"]
-        nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.4)
-        shop_draw = [n for n in shop_nodes if n != center_nx]
-        public_draw = [n for n in public_nodes if n != center_nx]
-        nx.draw_networkx_nodes(G, pos, nodelist=shop_draw, node_color="tab:blue", label="shop", ax=ax, node_size=80)
-        nx.draw_networkx_nodes(G, pos, nodelist=public_draw, node_color="tab:orange", label="public", ax=ax, node_size=80)
-        if center_nx and center_nx in G:
-            nx.draw_networkx_nodes(G, pos, nodelist=[center_nx], node_color="red", label="center", ax=ax, node_size=200)
-            nx.draw_networkx_labels(G, pos, {center_nx: "C"}, font_size=10, ax=ax)
+    nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.4)
+    nodelist = [n for n in G.nodes() if n != center_node]
+    # shop 与 public_space 分开着色（需 gdf 与节点顺序一致且含 unit_type）
+    if gdf is not None and len(gdf) == G.number_of_nodes() and "unit_type" in gdf.columns:
+        shop_nodes = [n for n in nodelist if n < len(gdf) and gdf.iloc[n]["unit_type"] == "shop"]
+        public_nodes = [n for n in nodelist if n < len(gdf) and gdf.iloc[n]["unit_type"] == "public_space"]
+        other_nodes = [n for n in nodelist if n not in shop_nodes and n not in public_nodes]
+        if shop_nodes:
+            nx.draw_networkx_nodes(G, pos, nodelist=shop_nodes, node_color="tab:orange", ax=ax, node_size=80, label="shop")
+        if public_nodes:
+            nx.draw_networkx_nodes(G, pos, nodelist=public_nodes, node_color="tab:blue", ax=ax, node_size=80, label="public_space")
+        if other_nodes:
+            nx.draw_networkx_nodes(G, pos, nodelist=other_nodes, node_color="gray", ax=ax, node_size=80)
     else:
-        nx.draw(G, pos, ax=ax, with_labels=False, node_size=60)
+        nx.draw_networkx_nodes(G, pos, nodelist=nodelist, node_color="tab:blue", ax=ax, node_size=80)
+    if center_node is not None and center_node in G:
+        nx.draw_networkx_nodes(G, pos, nodelist=[center_node], node_color="red", label="center", ax=ax, node_size=200)
+        nx.draw_networkx_labels(G, pos, {center_node: "C"}, font_size=10, ax=ax)
     ax.set_title(title)
-    if ax is None:
-        ax.legend()
     ax.axis("off")
     if pos_dict is not None and len(pos_dict) == G.number_of_nodes():
         ax.set_aspect("equal")
@@ -118,52 +110,36 @@ def plot_hetero_graph(
 
 
 def plot_subgraph_comparison(
-    data_full: HeteroData,
-    sub_data: HeteroData,
-    center_node: Tuple[str, int],
+    data_full: Data,
+    sub_data: Data,
+    center_global: int,
     center_label: Optional[float] = None,
     out_path: Optional[Path] = None,
 ) -> plt.Figure:
-    """
-    并排展示：整图（中心高亮）与 2-hop 子图。
-    center_node: (type, idx) 在整图中的中心节点。
-    center_label: 中心节点标签（可选，用于标题）。
-    """
+    """并排展示：整图（中心高亮）与 2-hop 子图。center_global: 整图中中心节点全局索引。"""
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    # 左：整图 + 中心高亮
-    G = _hetero_to_nx(data_full)
+    G = _data_to_nx(data_full)
     pos = nx.spring_layout(G, seed=42, k=0.5)
     ax = axes[0]
-    center_nx = center_node
-    shop_nodes = [n for n in G.nodes() if G.nodes[n]["node_type"] == "shop"]
-    public_nodes = [n for n in G.nodes() if G.nodes[n]["node_type"] == "public"]
+    nodelist = [n for n in G.nodes() if n != center_global]
     nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.4)
-    shop_draw = [n for n in shop_nodes if n != center_nx]
-    public_draw = [n for n in public_nodes if n != center_nx]
-    nx.draw_networkx_nodes(G, pos, nodelist=shop_draw, node_color="tab:blue", ax=ax, node_size=60)
-    nx.draw_networkx_nodes(G, pos, nodelist=public_draw, node_color="tab:orange", ax=ax, node_size=60)
-    if center_nx in G:
-        nx.draw_networkx_nodes(G, pos, nodelist=[center_nx], node_color="red", ax=ax, node_size=180)
-        nx.draw_networkx_labels(G, pos, {center_nx: "C"}, font_size=10, ax=ax)
-    ax.set_title(f"Full graph (center public[{center_node[1]}])")
+    nx.draw_networkx_nodes(G, pos, nodelist=nodelist, node_color="tab:blue", ax=ax, node_size=60)
+    if center_global in G:
+        nx.draw_networkx_nodes(G, pos, nodelist=[center_global], node_color="red", ax=ax, node_size=180)
+        nx.draw_networkx_labels(G, pos, {center_global: "C"}, font_size=10, ax=ax)
+    ax.set_title("Full graph (center highlighted)")
     ax.axis("off")
-    # 右：2-hop 子图
-    G_sub = _hetero_to_nx(sub_data)
+    G_sub = _data_to_nx(sub_data)
     pos_sub = nx.spring_layout(G_sub, seed=42, k=0.6)
     ax = axes[1]
-    shop_s = [n for n in G_sub.nodes() if G_sub.nodes[n]["node_type"] == "shop"]
-    public_s = [n for n in G_sub.nodes() if G_sub.nodes[n]["node_type"] == "public"]
-    center_sub = ("public", 0) if sub_data["public"].num_nodes > 0 else None
+    center_local = getattr(sub_data, "center_idx", 0)
     nx.draw_networkx_edges(G_sub, pos_sub, ax=ax, alpha=0.4)
-    shop_draw = [n for n in shop_s if n != center_sub]
-    public_draw = [n for n in public_s if n != center_sub]
-    nx.draw_networkx_nodes(G_sub, pos_sub, nodelist=shop_draw, node_color="tab:blue", ax=ax, node_size=80)
-    nx.draw_networkx_nodes(G_sub, pos_sub, nodelist=public_draw, node_color="tab:orange", ax=ax, node_size=80)
-    if center_sub and center_sub in G_sub:
-        nx.draw_networkx_nodes(G_sub, pos_sub, nodelist=[center_sub], node_color="red", ax=ax, node_size=200)
-        nx.draw_networkx_labels(G_sub, pos_sub, {center_sub: "C"}, font_size=10, ax=ax)
+    nx.draw_networkx_nodes(G_sub, pos_sub, nodelist=[n for n in G_sub.nodes() if n != center_local], node_color="tab:blue", ax=ax, node_size=80)
+    if center_local in G_sub:
+        nx.draw_networkx_nodes(G_sub, pos_sub, nodelist=[center_local], node_color="red", ax=ax, node_size=200)
+        nx.draw_networkx_labels(G_sub, pos_sub, {center_local: "C"}, font_size=10, ax=ax)
     lbl = f", label={center_label:.1f}" if center_label is not None else ""
-    ax.set_title(f"2-hop subgraph (shop={sub_data['shop'].num_nodes}, public={sub_data['public'].num_nodes}{lbl})")
+    ax.set_title(f"2-hop subgraph (n={sub_data.num_nodes}{lbl})")
     ax.axis("off")
     plt.tight_layout()
     if out_path:
@@ -314,6 +290,45 @@ def plot_pred_vs_true(
     return fig
 
 
+def plot_pred_vs_true_by_subgraph(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    center_ids: torch.Tensor,
+    out_path: Optional[Path] = None,
+) -> plt.Figure:
+    """
+    按静态子图聚合：同一 center 的多个时间片取 True/Pred 的平均值，再画 Pred vs True。
+    用于查看「同一子图对应一个平均标签、一个平均预测」时预测是否合理。
+    center_ids: 与 y_true/y_pred 同长的整数张量，表示每个样本的全局 center 索引。
+    """
+    yt = y_true.numpy().ravel()
+    yp = y_pred.numpy().ravel()
+    cid = center_ids.numpy().ravel()
+    uniq = np.unique(cid)
+    mean_trues = np.array([yt[cid == c].mean() for c in uniq])
+    mean_preds = np.array([yp[cid == c].mean() for c in uniq])
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(mean_trues, mean_preds, alpha=0.8, label=f"by subgraph (n={len(uniq)})")
+    mn = min(mean_trues.min(), mean_preds.min())
+    mx = max(mean_trues.max(), mean_preds.max())
+    ax.plot([mn, mx], [mn, mx], "r--", label="y=x")
+    # 数据自身的拟合曲线：pred = a * true + b（线性回归）
+    if len(mean_trues) >= 2:
+        coef = np.polyfit(mean_trues, mean_preds, 1)
+        x_fit = np.linspace(mn, mx, 100)
+        y_fit = np.polyval(coef, x_fit)
+        ax.plot(x_fit, y_fit, "g-", lw=2, label=f"fit: pred={coef[0]:.3f}*true+{coef[1]:.3f}")
+    ax.set_xlabel("True mean (log1p flow, per subgraph)")
+    ax.set_ylabel("Predicted mean (log1p flow, per subgraph)")
+    ax.set_title("Prediction vs True (val, aggregated by static subgraph)")
+    ax.legend()
+    ax.set_aspect("equal")
+    plt.tight_layout()
+    if out_path:
+        plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
 def plot_error_histogram(
     y_true: torch.Tensor,
     y_pred: torch.Tensor,
@@ -334,7 +349,7 @@ def plot_error_histogram(
 
 
 def plot_nodes_by_value(
-    data: HeteroData,
+    data: Data,
     values: torch.Tensor,
     title: str = "Node values",
     out_path: Optional[Path] = None,
@@ -343,26 +358,18 @@ def plot_nodes_by_value(
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
 ) -> plt.Figure:
-    """Draw graph with node color = values (public nodes; shop gray). values shape [n_public] or [n_shop+n_public].
-    gdf: GeoDataFrame 与 nodes.csv 顺序一致。若提供，显示 GeoJSON 底图并将节点置于图块中心。"""
-    G = _hetero_to_nx(data)
-    pos_dict = _pos_from_gdf(data, gdf) if gdf is not None else None
+    """同构 Data：节点着色为 values。values 可为 [n_public]（仅 public）或 [N]。"""
+    G = _data_to_nx(data)
+    pos_dict = _pos_from_gdf_data(data, gdf) if gdf is not None else None
     pos = pos_dict if (pos_dict is not None and len(pos_dict) == G.number_of_nodes()) else nx.spring_layout(G, seed=42, k=0.5)
-    # Map (node_type, idx) -> value; if only public values given, shop gets nan/gray
-    shop_n = data["shop"].num_nodes
-    public_n = data["public"].num_nodes
+    shop_n = getattr(data, "num_shop", 0)
+    public_n = getattr(data, "num_public", data.num_nodes - shop_n)
     if values.numel() == public_n:
-        v_shop = [float("nan")] * shop_n
-        v_public = values.tolist()
+        node_vals = {i: float("nan") for i in range(shop_n)}
+        for i, v in enumerate(values.tolist()):
+            node_vals[shop_n + i] = v
     else:
-        v_shop = values[:shop_n].tolist()
-        v_public = values[shop_n:].tolist()
-    node_vals = {}
-    for i in range(shop_n):
-        node_vals[("shop", i)] = v_shop[i]
-    for i in range(public_n):
-        node_vals[("public", i)] = v_public[i]
-    colors = [node_vals.get(n, float("nan")) for n in G.nodes()]
+        node_vals = {i: values[i].item() for i in range(data.num_nodes)}
     fig, ax = plt.subplots(figsize=(8, 6))
     if gdf is not None and pos_dict is not None and len(pos_dict) == G.number_of_nodes():
         gdf_valid = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty].copy()
@@ -376,13 +383,14 @@ def plot_nodes_by_value(
     invalid = [n for n in G.nodes() if n not in valid]
     if invalid:
         nx.draw_networkx_nodes(G, pos, nodelist=invalid, node_color="lightgray", ax=ax, node_size=60)
-    if vmin is None:
-        vmin = min(node_vals[n] for n in valid)
-    if vmax is None:
-        vmax = max(node_vals[n] for n in valid)
-    sc = nx.draw_networkx_nodes(G, pos, nodelist=valid, node_color=[node_vals[n] for n in valid],
-                                ax=ax, node_size=80, cmap=plt.cm.jet, vmin=vmin, vmax=vmax)
-    plt.colorbar(sc, ax=ax, label=value_label)
+    if valid:
+        if vmin is None:
+            vmin = min(node_vals[n] for n in valid)
+        if vmax is None:
+            vmax = max(node_vals[n] for n in valid)
+        sc = nx.draw_networkx_nodes(G, pos, nodelist=valid, node_color=[node_vals[n] for n in valid],
+                                    ax=ax, node_size=80, cmap=plt.cm.jet, vmin=vmin, vmax=vmax)
+        plt.colorbar(sc, ax=ax, label=value_label)
     ax.set_title(title)
     plt.axis("off")
     if pos_dict is not None and len(pos_dict) == G.number_of_nodes():
@@ -520,24 +528,21 @@ def plot_edge_toggle_effect(
 
 
 def plot_graph_with_highlighted_edges(
-    data: HeteroData,
-    edges_highlight: List[Tuple[Tuple[str, int], Tuple[str, int]]],
+    data: Data,
+    edges_highlight: List[Tuple[int, int]],
     node_values: Optional[torch.Tensor] = None,
     title: str = "Graph with toggled edges highlighted",
     out_path: Optional[Path] = None,
 ) -> plt.Figure:
-    """Draw graph; highlight specific edges (e.g. toggled). edges_highlight: [((st,u),(dt,v)), ...]."""
-    G = _hetero_to_nx(data)
+    """同构 Data：高亮边。edges_highlight: [(u, v), ...] 为全局节点索引。"""
+    G = _data_to_nx(data)
     pos = nx.spring_layout(G, seed=42, k=0.5)
     fig, ax = plt.subplots(figsize=(8, 6))
     nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.3, width=1)
-    for (st, u), (dt, v) in edges_highlight:
-        if G.has_edge((st, u), (dt, v)):
-            nx.draw_networkx_edges(G, pos, edgelist=[((st, u), (dt, v))], ax=ax, width=3, edge_color="red", style="--")
-    shop_nodes = [n for n in G.nodes() if G.nodes[n]["node_type"] == "shop"]
-    public_nodes = [n for n in G.nodes() if G.nodes[n]["node_type"] == "public"]
-    nx.draw_networkx_nodes(G, pos, nodelist=shop_nodes, node_color="tab:blue", ax=ax, node_size=80)
-    nx.draw_networkx_nodes(G, pos, nodelist=public_nodes, node_color="tab:orange", ax=ax, node_size=80)
+    for u, v in edges_highlight:
+        if G.has_edge(u, v):
+            nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], ax=ax, width=3, edge_color="red", style="--")
+    nx.draw_networkx_nodes(G, pos, node_color="tab:blue", ax=ax, node_size=80)
     ax.set_title(title)
     plt.axis("off")
     plt.tight_layout()

@@ -1,6 +1,6 @@
 """
-TimeSliceDataset: one HeteroData sample per time slice (e.g. 42).
-SubgraphTimeSliceDataset: 4400 samples = 220 time slices × 20 labeled nodes, 2-hop subgraph each.
+TimeSliceDataset: one PyG Data sample per time slice.
+SubgraphTimeSliceDataset: 220 time slices × labeled public nodes, 2-hop 同构子图 each.
 Train/val split by time slice index (80/20).
 """
 from pathlib import Path
@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple, Union
 
 from torch.utils.data import Dataset
 
-from geo.tool.build_graph import build_hetero_data, load_normalizer, save_normalizer
+from geo.tool.build_graph import build_graph_data, load_normalizer, save_normalizer
 from data.subgraph_utils import extract_2hop_subgraph
 
 
@@ -45,7 +45,7 @@ class TimeSliceDataset(Dataset):
             self.normalizer = None
 
         day0, slot0 = time_slices[0]
-        data0, norm0 = build_hetero_data(
+        data0, norm0 = build_graph_data(
             nodes_path, edges_path, flows_path,
             day=day0, hour=slot0 if not use_slot else 12,
             slot_idx=slot0 if use_slot else None,
@@ -58,7 +58,7 @@ class TimeSliceDataset(Dataset):
 
         self._samples = [(data0, day0, slot0)]
         for (day, slot_or_hour) in time_slices[1:]:
-            data, _ = build_hetero_data(
+            data, _ = build_graph_data(
                 nodes_path, edges_path, flows_path,
                 day=day, hour=slot_or_hour if not use_slot else 12,
                 slot_idx=slot_or_hour if use_slot else None,
@@ -140,7 +140,7 @@ class SubgraphTimeSliceDataset(Dataset):
             ]
         if not labeled_public_indices:
             d0, s0 = time_slices[0][0], time_slices[0][1]
-            data0, _ = build_hetero_data(
+            data0, _ = build_graph_data(
                 nodes_path, edges_path, flows_path,
                 day=d0, hour=s0 if not use_slot else 12,
                 slot_idx=s0 if use_slot else None,
@@ -149,16 +149,15 @@ class SubgraphTimeSliceDataset(Dataset):
                 label_transform=label_transform,
             )
             labeled_public_indices = [
-                j for j in range(data0["public"].mask.size(0))
-                if data0["public"].mask[j].item()
+                j for j in range(data0.mask.size(0)) if data0.mask[j].item()
             ]
             if not labeled_public_indices:
-                labeled_public_indices = list(range(data0["public"].x.size(0)))
+                labeled_public_indices = list(range(data0.num_public))
 
         self._samples: List[Tuple] = []
         for ts in time_slices:
             day, slot_or_hour = ts[0], ts[1]
-            data, norm = build_hetero_data(
+            data, norm = build_graph_data(
                 nodes_path, edges_path, flows_path,
                 day=day,
                 hour=slot_or_hour if not use_slot else 12,
@@ -170,9 +169,10 @@ class SubgraphTimeSliceDataset(Dataset):
             if self.normalizer is None and norm is not None:
                 self.normalizer = norm
 
-            for center_idx in labeled_public_indices:
-                sub, _ = extract_2hop_subgraph(data, "public", center_idx)
-                self._samples.append((sub, day, slot_or_hour, center_idx))
+            for center_public_idx in labeled_public_indices:
+                center_global = data.num_shop + center_public_idx
+                sub, _ = extract_2hop_subgraph(data, center_global)
+                self._samples.append((sub, day, slot_or_hour, center_public_idx))
 
     def __len__(self):
         return len(self._samples)

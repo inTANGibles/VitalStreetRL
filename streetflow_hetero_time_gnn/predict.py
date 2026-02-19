@@ -11,8 +11,8 @@ import torch
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from geo.tool.build_graph import build_hetero_data, load_normalizer
-from models.hetero_sage import HeteroSAGE
+from geo.tool.build_graph import build_graph_data, load_normalizer
+from models.sage import SAGE
 from data.subgraph_utils import extract_2hop_subgraph
 
 
@@ -25,7 +25,7 @@ def predict(
     slot_idx: Optional[int] = None,
     use_slot: bool = False,
     device: Optional[torch.device] = None,
-) -> Tuple[Path, torch.Tensor, "HeteroData"]:
+) -> Tuple[Path, torch.Tensor, "Data"]:
     """
     Run prediction for (day, hour) or (day, slot_idx).
     use_slot: 若 True，hour 视为 slot_idx，label 为 1-10。
@@ -41,7 +41,7 @@ def predict(
     normalizer = load_normalizer(normalizer_path) if normalizer_path.exists() else None
     label_tf = "remap_1_10" if use_slot else "log1p"
     s = slot_idx if use_slot and slot_idx is not None else hour
-    data, _ = build_hetero_data(
+    data, _ = build_graph_data(
         nodes_path, edges_path, flows_path,
         day=day, hour=hour if not use_slot else 12,
         slot_idx=s if use_slot else None,
@@ -53,15 +53,16 @@ def predict(
     data = data.to(device)
     ckpt = torch.load(checkpoint_dir / "best.pt", map_location=device)
     hidden = int(ckpt.get("hidden_channels", 64))
-    model = HeteroSAGE(in_channels=11, hidden_channels=hidden, out_channels=1).to(device)
+    model = SAGE(in_channels=11, hidden_channels=hidden, out_channels=1).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     with torch.no_grad():
-        out = model(data.x_dict, data.edge_index_dict)
-    yhat_shop = out["shop"].squeeze(1).cpu()
-    yhat_public = out["public"].squeeze(1).cpu()
-    shop_ids = data["shop"].node_id.cpu().tolist()
-    public_ids = data["public"].node_id.cpu().tolist()
+        out = model(data.x, data.edge_index).squeeze(1)
+    n_shop = data.num_shop
+    yhat_shop = out[:n_shop].cpu()
+    yhat_public = out[n_shop:].cpu()
+    shop_ids = data.node_id[:n_shop].cpu().tolist()
+    public_ids = data.node_id[n_shop:].cpu().tolist()
     output_dir.mkdir(parents=True, exist_ok=True)
     out_csv = output_dir / "predictions.csv"
     if use_slot:
@@ -90,10 +91,9 @@ def predict_shop_converted_to_public(
     slot_idx: Optional[int] = None,
     use_slot: bool = False,
     device: Optional[torch.device] = None,
-) -> Tuple[float, "HeteroData", int]:
+) -> Tuple[float, "Data", int]:
     """
     将某个 SHOP 模拟改造成 public space，构建 2-hop 子图，预测该“新 public”的客流量。
-    子图以转换后的节点为中心，其与周边 shop 的边来自 edges.csv（需包含 shop-shop 邻接）。
     Returns: (yhat_flow, subgraph_data, center_idx_in_subgraph)
     """
     if device is None:
@@ -107,7 +107,7 @@ def predict_shop_converted_to_public(
     normalizer = load_normalizer(normalizer_path) if normalizer_path.exists() else None
     label_tf = "remap_1_10" if use_slot else "log1p"
     s = slot_idx if use_slot and slot_idx is not None else hour
-    data, _ = build_hetero_data(
+    data, _ = build_graph_data(
         nodes_path, edges_path, flows_path,
         day=day, hour=hour if not use_slot else 12,
         slot_idx=s if use_slot else None,
@@ -117,21 +117,21 @@ def predict_shop_converted_to_public(
         device=device,
         shop_to_public=shop_node_id,
     )
-    public_ids = data["public"].node_id.cpu().tolist()
+    public_ids = data.node_id[data.num_shop:].cpu().tolist()
     if shop_node_id not in public_ids:
         raise ValueError(f"shop_node_id {shop_node_id} 转换后未出现在 public 中")
-    center_idx = public_ids.index(shop_node_id)
-    sub, center_new = extract_2hop_subgraph(data, "public", center_idx)
+    center_public_idx = public_ids.index(shop_node_id)
+    center_global = data.num_shop + center_public_idx
+    sub, center_new = extract_2hop_subgraph(data, center_global)
     sub = sub.to(device)
     ckpt = torch.load(checkpoint_dir / "best.pt", map_location=device)
     hidden = int(ckpt.get("hidden_channels", 64))
-    model = HeteroSAGE(in_channels=11, hidden_channels=hidden, out_channels=1).to(device)
+    model = SAGE(in_channels=11, hidden_channels=hidden, out_channels=1).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     with torch.no_grad():
-        out = model(sub.x_dict, sub.edge_index_dict)
-    yhat_public = out["public"].squeeze(1).cpu()
-    yhat_flow = float(yhat_public[center_new].item()) if use_slot else float(torch.expm1(yhat_public[center_new]).item())
+        out = model(sub.x, sub.edge_index).squeeze(1)
+    yhat_flow = float(out[center_new].item()) if use_slot else float(torch.expm1(out[center_new]).item())
     return yhat_flow, sub.cpu(), center_new
 
 
