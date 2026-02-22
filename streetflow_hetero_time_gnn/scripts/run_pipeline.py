@@ -54,7 +54,7 @@ from utils.viz import (
 )
 
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(model, loader, optimizer, device, max_grad_norm=None):
     model.train()
     total_loss, n_batch = 0.0, 0
     for batch in loader:
@@ -66,6 +66,8 @@ def train_one_epoch(model, loader, optimizer, device):
         y_center = batch.y.squeeze(1)
         loss = F.l1_loss(pred_center, y_center)
         loss.backward()
+        if max_grad_norm is not None and max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
         total_loss += loss.item()
         n_batch += 1
@@ -178,6 +180,8 @@ def main():
     hidden_channels = (optuna_best_params or {}).get("hidden_channels", 64)
     lr = (optuna_best_params or {}).get("lr", 1e-3)
     weight_decay = (optuna_best_params or {}).get("weight_decay", 0.0)
+    dropout = (optuna_best_params or {}).get("dropout", 0.2)  # 缓解过拟合、稳定 Val MAE
+    max_grad_norm = (optuna_best_params or {}).get("max_grad_norm", 1.0)  # 梯度裁剪，减轻 Val 尖峰
     # 与 notebook 一致：n_epochs 至少 400 以便充分收敛，早停 patience=50
     n_epochs_base = (optuna_best_params or {}).get("n_epochs", args.n_epochs)
     n_epochs = max(n_epochs_base, 400)
@@ -185,15 +189,26 @@ def main():
     no_improve = 0
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SAGE(in_channels=feat_dim, hidden_channels=hidden_channels, out_channels=1).to(device)
+    model = SAGE(
+        in_channels=feat_dim,
+        hidden_channels=hidden_channels,
+        out_channels=1,
+        dropout=dropout,
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=15, min_lr=1e-5
+    )
     best_val_mae = float("inf")
     log_epochs, log_train_loss, log_val_mae = [], [], []
 
-    print("D. Training...")
+    print("D. Training...", f"(dropout={dropout}, max_grad_norm={max_grad_norm})")
     for epoch in range(1, n_epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device)
+        train_loss = train_one_epoch(
+            model, train_loader, optimizer, device, max_grad_norm=max_grad_norm
+        )
         val_mae_, val_rmse_, _, _, _ = evaluate(model, val_loader, device)
+        scheduler.step(val_mae_)
         log_epochs.append(epoch)
         log_train_loss.append(train_loss)
         log_val_mae.append(val_mae_)
@@ -249,7 +264,7 @@ def main():
         vmin, vmax = float(public_vals.min()), float(public_vals.max())
         gdf = gpd.read_file(street_geojson) if street_geojson.exists() else None
         if gdf is not None:
-            plot_nodes_by_value(data_pred.cpu(), public_vals, title=f"Predicted flow (day={day}, slot={slot})", value_label="yhat_flow", gdf=gdf, vmin=vmin, vmax=vmax, out_path=fig_dir / "nodes_by_value.png")
+            plot_nodes_by_value(data_pred.cpu(), public_vals, title=f"Predicted flow (day={day}, slot={slot})", value_label="yhat_flow", gdf=gdf, vmin=vmin, vmax=vmax, draw_edges=False, out_path=fig_dir / "nodes_by_value.png")
             plt.close("all")
             plot_heatmap_choropleth(gdf, yhat_all.numpy(), title=f"Predicted flow heatmap (day={day}, slot={slot})", value_label="yhat_flow", smooth_with_neighbors=True, vmin=vmin, vmax=vmax, out_path=fig_dir / "heatmap_choropleth.png")
             plt.close("all")
@@ -280,6 +295,8 @@ def main():
         "n_epochs": n_epochs,
         "hidden_channels": hidden_channels,
         "lr": lr,
+        "dropout": dropout,
+        "max_grad_norm": max_grad_norm,
     }
     with open(out_dir / "pipeline_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)

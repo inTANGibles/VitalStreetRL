@@ -1,8 +1,26 @@
-"""状态转移：Transition.step，含 SHOP_TO_PUBLIC_SPACE 后 flow_prediction 更新"""
-from typing import Tuple, Dict, Any
+"""状态转移：Transition.step，含 SHOP_TO_PUBLIC_SPACE 后 flow_prediction 更新；无时序批量 apply_actions_set"""
+from typing import Tuple, Dict, Any, List
 from .state import WorldState
 from .action_space import Action, ActionType
 from .flow_from_complexity import compute_flow_from_complexity
+
+
+def apply_actions_set(
+    state: WorldState,
+    actions: List[Action],
+    transition: "Transition",
+) -> WorldState:
+    """一次性应用动作集合（无时序）。按 target_id 升序确定性应用。"""
+    if not actions:
+        return state
+    sorted_actions = sorted(
+        [a for a in actions if a.type != ActionType.NO_OP and a.target_id is not None],
+        key=lambda a: (str(a.target_id),),
+    )
+    current = state.copy()
+    for action in sorted_actions:
+        current, _ = transition.step(current, action)
+    return current
 
 
 class Transition:

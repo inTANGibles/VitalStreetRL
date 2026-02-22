@@ -14,17 +14,25 @@ from torch_geometric.data import Data
 
 
 def _pos_from_gdf_data(data: Data, gdf: Any) -> Optional[Dict[int, Tuple[float, float]]]:
-    """从 Data.node_id 与 gdf 行索引对应得到节点位置。返回 {node_idx: (x, y)}。"""
-    if not hasattr(data, "node_id"):
-        return None
+    """从 Data.node_id 与 gdf 行索引对应得到节点位置。返回 {node_idx: (x, y)}。
+    若 len(gdf)==data.num_nodes，视为子图用 gdf：行 i 对应局部节点 i，用 iloc[i]；
+    否则视为全图：行位置与 global node_id 一致，用 iloc[node_id]。
+    """
     pos = {}
     try:
         centroids = gdf.geometry.centroid
-        for i in range(data.num_nodes):
-            nid = int(data.node_id[i].item())
-            if nid >= len(centroids):
+        n_nodes = data.num_nodes if hasattr(data, "num_nodes") else data.x.size(0)
+        use_subset_indexing = len(centroids) == n_nodes
+        for i in range(n_nodes):
+            if use_subset_indexing:
+                idx = i
+            else:
+                if not hasattr(data, "node_id"):
+                    continue
+                idx = int(data.node_id[i].item())
+            if idx >= len(centroids):
                 continue
-            p = centroids.iloc[nid]
+            p = centroids.iloc[idx]
             if hasattr(p, "is_empty") and p.is_empty:
                 continue
             try:
@@ -357,8 +365,10 @@ def plot_nodes_by_value(
     gdf: Optional[Any] = None,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
+    draw_edges: bool = True,
 ) -> plt.Figure:
-    """同构 Data：节点着色为 values。values 可为 [n_public]（仅 public）或 [N]。"""
+    """同构 Data：节点着色为 values。values 可为 [n_public]（仅 public）或 [N]。
+    draw_edges=False 时不画边，仅保留底图+节点颜色，适合全图预测流量等以节点值为主的展示。"""
     G = _data_to_nx(data)
     pos_dict = _pos_from_gdf_data(data, gdf) if gdf is not None else None
     pos = pos_dict if (pos_dict is not None and len(pos_dict) == G.number_of_nodes()) else nx.spring_layout(G, seed=42, k=0.5)
@@ -378,7 +388,8 @@ def plot_nodes_by_value(
                 gdf_valid.plot(ax=ax, facecolor="lightgray", edgecolor="gray", alpha=0.5, linewidth=0.5, aspect="equal")
             except ValueError:
                 pass
-    nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.4)
+    if draw_edges:
+        nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.4)
     valid = [n for n in G.nodes() if not math.isnan(node_vals.get(n, float("nan")))]
     invalid = [n for n in G.nodes() if n not in valid]
     if invalid:
@@ -533,18 +544,57 @@ def plot_graph_with_highlighted_edges(
     node_values: Optional[torch.Tensor] = None,
     title: str = "Graph with toggled edges highlighted",
     out_path: Optional[Path] = None,
+    gdf: Optional[Any] = None,
+    center_node: Optional[int] = None,
+    show_node_labels: bool = True,
 ) -> plt.Figure:
-    """同构 Data：高亮边。edges_highlight: [(u, v), ...] 为全局节点索引。"""
+    """同构 Data：高亮边。edges_highlight: [(u, v), ...] 为节点索引（与 data 一致）。
+    若传 gdf：用地理坐标与底图；center_node 高亮为红色；可选显示 node_id 标签。
+    """
     G = _data_to_nx(data)
-    pos = nx.spring_layout(G, seed=42, k=0.5)
-    fig, ax = plt.subplots(figsize=(8, 6))
+    pos_dict = _pos_from_gdf_data(data, gdf) if gdf is not None else None
+    if pos_dict is not None and len(pos_dict) == G.number_of_nodes():
+        pos = pos_dict
+    else:
+        pos = nx.spring_layout(G, seed=42, k=0.5)
+    fig, ax = plt.subplots(figsize=(10, 8))
+    if gdf is not None and pos_dict is not None:
+        gdf_valid = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty].copy()
+        if not gdf_valid.empty:
+            try:
+                gdf_valid.plot(ax=ax, facecolor="lightgray", edgecolor="gray", alpha=0.5, linewidth=0.5, aspect="equal")
+            except ValueError:
+                pass
     nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.3, width=1)
     for u, v in edges_highlight:
         if G.has_edge(u, v):
             nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], ax=ax, width=3, edge_color="red", style="--")
-    nx.draw_networkx_nodes(G, pos, node_color="tab:blue", ax=ax, node_size=80)
+    nodelist = [n for n in G.nodes() if n != center_node]
+    if gdf is not None and len(gdf) == G.number_of_nodes() and "unit_type" in gdf.columns:
+        shop_nodes = [n for n in nodelist if n < len(gdf) and gdf.iloc[n]["unit_type"] == "shop"]
+        public_nodes = [n for n in nodelist if n < len(gdf) and gdf.iloc[n]["unit_type"] == "public_space"]
+        other_nodes = [n for n in nodelist if n not in shop_nodes and n not in public_nodes]
+        if shop_nodes:
+            nx.draw_networkx_nodes(G, pos, nodelist=shop_nodes, node_color="tab:orange", ax=ax, node_size=80, label="shop")
+        if public_nodes:
+            nx.draw_networkx_nodes(G, pos, nodelist=public_nodes, node_color="tab:blue", ax=ax, node_size=80, label="public")
+        if other_nodes:
+            nx.draw_networkx_nodes(G, pos, nodelist=other_nodes, node_color="gray", ax=ax, node_size=80)
+    else:
+        nx.draw_networkx_nodes(G, pos, nodelist=nodelist, node_color="tab:blue", ax=ax, node_size=80)
+    if center_node is not None and center_node in G:
+        nx.draw_networkx_nodes(G, pos, nodelist=[center_node], node_color="red", label="center", ax=ax, node_size=200)
+        if hasattr(data, "node_id"):
+            nx.draw_networkx_labels(G, pos, {center_node: str(int(data.node_id[center_node].item()))}, font_size=10, ax=ax, font_weight="bold")
+        else:
+            nx.draw_networkx_labels(G, pos, {center_node: "C"}, font_size=10, ax=ax)
+    if show_node_labels and hasattr(data, "node_id") and G.number_of_nodes() <= 80:
+        labels = {i: str(int(data.node_id[i].item())) for i in G.nodes() if i != center_node}
+        nx.draw_networkx_labels(G, pos, labels, ax=ax, font_size=6, alpha=0.8)
     ax.set_title(title)
-    plt.axis("off")
+    ax.axis("off")
+    if pos_dict is not None and len(pos_dict) == G.number_of_nodes():
+        ax.set_aspect("equal")
     plt.tight_layout()
     if out_path:
         plt.savefig(out_path, dpi=150, bbox_inches="tight")

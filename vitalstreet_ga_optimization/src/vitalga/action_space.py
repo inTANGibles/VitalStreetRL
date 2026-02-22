@@ -1,4 +1,11 @@
-"""动作空间：ActionType(0,1)、编码 [action_type, unit_index, type_id]、解码与合法动作生成"""
+"""动作空间：由优化策略转译的 ActionType、编码 [action_type, unit_index, type_id]、解码与合法动作生成。
+
+更新策略与 ActionType 对应（见论文 3.3.1 节与表 3-x）：
+- 业态置换：选目标店铺 shop_i + 新业态 type_j → CHANGE_BUSINESS (0)
+- 街道打通与优化：店铺→公共空间 → SHOP_TO_PUBLIC_SPACE (1)；中庭→公共空间、公共空间→店铺/中庭 → 预留 (2)(3)
+- 公共空间改造：收窄（选公共空间 + 几何缩放/简化）→ 预留 (4)
+当前实现仅支持 CHANGE_BUSINESS 与 SHOP_TO_PUBLIC_SPACE；其余为扩展预留。
+"""
 from enum import Enum
 from typing import List, Tuple, Optional, Dict, Any
 import numpy as np
@@ -9,10 +16,13 @@ from .business_type import BusinessCategory
 
 
 class ActionType(Enum):
-    """仅保留两类动作"""
-    CHANGE_BUSINESS = 0          # shop_i + type_j
-    SHOP_TO_PUBLIC_SPACE = 1    # Shop → Public Space
-    NO_OP = 9                   # fallback（无效动作时）
+    """由优化策略转译的动作类型；0、1 已实现，2–4 预留扩展。"""
+    CHANGE_BUSINESS = 0          # 业态置换：shop_i + type_j
+    SHOP_TO_PUBLIC_SPACE = 1     # 街道打通：店铺→公共空间
+    ATRIUM_TO_PUBLIC_SPACE = 2   # 街道打通：中庭→公共空间（预留）
+    PUBLIC_TO_SHOP = 3           # 街道打通：公共空间→店铺/中庭（预留）
+    PUBLIC_NARROW = 4            # 公共空间改造：收窄（几何缩放/简化）（预留）
+    NO_OP = 9                    # fallback（无效动作时）
 
 
 @dataclass
@@ -35,7 +45,7 @@ class Action:
 
 
 class ActionSpace:
-    """动作空间：decode、action_dim、合法动作生成；仅 shop 可执行 CHANGE_BUSINESS / SHOP_TO_PUBLIC_SPACE；protected/enabled 必须生效"""
+    """动作空间：decode、action_dim、合法动作生成。当前仅对 shop（非 protected、enabled）支持业态置换与店铺→公共空间；mask 对应表 3-x 中的约束标签与可改造标签。"""
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config

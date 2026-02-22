@@ -5,6 +5,13 @@ max_steps: 20
 cost_alpha: 1.0   # shop_to_public 权重
 cost_beta: 0.5    # change_business 权重
 
+# 方案A 无时序编码（nodewise_action）：Genome 长度 M=可改造节点数，基因值 0..N，预算 B
+encoding_type: "nodewise_action"   # "sequence" | "nodewise_action"
+B: 5                              # 最多改造节点数（非零基因数 ≤ B）
+pm: 0.2                           # 变异概率
+seed: 42
+use_mask: true
+
 reward:
   mu_violation: 1.0
   vitality_metrics: {}

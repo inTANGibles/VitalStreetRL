@@ -1,0 +1,295 @@
+{
+  "objectives": {
+    "vitality": [
+      12401.386821401706,
+      12817.10032592072,
+      12401.386821401706,
+      12817.10032592072,
+      12401.386821401706,
+      12652.796921589961,
+      12565.690225732467,
+      12652.796921589961,
+      12817.10032592072,
+      12565.690225732467,
+      12565.690225732467,
+      12817.10032592072,
+      12817.10032592072,
+      12565.690225732467,
+      12817.10032592072,
+      12401.386821401706,
+      12652.796921589961
+    ],
+    "violation": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "cost": [
+      8.5,
+      10.5,
+      8.5,
+      10.5,
+      8.5,
+      9.5,
+      9.0,
+      9.5,
+      10.5,
+      9.0,
+      9.0,
+      10.5,
+      10.5,
+      9.0,
+      10.5,
+      8.5,
+      9.5
+    ]
+  },
+  "n_solutions": 17,
+  "details": [
+    {
+      "final_vitality": 12401.386821401706,
+      "violation_total": 0.0,
+      "cost_proxy": 8.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 3,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12401.386821401706
+    },
+    {
+      "final_vitality": 12817.10032592072,
+      "violation_total": 0.0,
+      "cost_proxy": 10.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 5,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12817.10032592072
+    },
+    {
+      "final_vitality": 12401.386821401706,
+      "violation_total": 0.0,
+      "cost_proxy": 8.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 3,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12401.386821401706
+    },
+    {
+      "final_vitality": 12817.10032592072,
+      "violation_total": 0.0,
+      "cost_proxy": 10.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 5,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12817.10032592072
+    },
+    {
+      "final_vitality": 12401.386821401706,
+      "violation_total": 0.0,
+      "cost_proxy": 8.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 3,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12401.386821401706
+    },
+    {
+      "final_vitality": 12652.796921589961,
+      "violation_total": 0.0,
+      "cost_proxy": 9.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 4,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12652.796921589961
+    },
+    {
+      "final_vitality": 12565.690225732467,
+      "violation_total": 0.0,
+      "cost_proxy": 9.0,
+      "n_change_business": 10,
+      "n_shop_to_public": 4,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12565.690225732467
+    },
+    {
+      "final_vitality": 12652.796921589961,
+      "violation_total": 0.0,
+      "cost_proxy": 9.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 4,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12652.796921589961
+    },
+    {
+      "final_vitality": 12817.10032592072,
+      "violation_total": 0.0,
+      "cost_proxy": 10.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 5,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12817.10032592072
+    },
+    {
+      "final_vitality": 12565.690225732467,
+      "violation_total": 0.0,
+      "cost_proxy": 9.0,
+      "n_change_business": 10,
+      "n_shop_to_public": 4,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12565.690225732467
+    },
+    {
+      "final_vitality": 12565.690225732467,
+      "violation_total": 0.0,
+      "cost_proxy": 9.0,
+      "n_change_business": 10,
+      "n_shop_to_public": 4,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12565.690225732467
+    },
+    {
+      "final_vitality": 12817.10032592072,
+      "violation_total": 0.0,
+      "cost_proxy": 10.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 5,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12817.10032592072
+    },
+    {
+      "final_vitality": 12817.10032592072,
+      "violation_total": 0.0,
+      "cost_proxy": 10.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 5,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12817.10032592072
+    },
+    {
+      "final_vitality": 12565.690225732467,
+      "violation_total": 0.0,
+      "cost_proxy": 9.0,
+      "n_change_business": 10,
+      "n_shop_to_public": 4,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12565.690225732467
+    },
+    {
+      "final_vitality": 12817.10032592072,
+      "violation_total": 0.0,
+      "cost_proxy": 10.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 5,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12817.10032592072
+    },
+    {
+      "final_vitality": 12401.386821401706,
+      "violation_total": 0.0,
+      "cost_proxy": 8.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 3,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12401.386821401706
+    },
+    {
+      "final_vitality": 12652.796921589961,
+      "violation_total": 0.0,
+      "cost_proxy": 9.5,
+      "n_change_business": 11,
+      "n_shop_to_public": 4,
+      "violation_breakdown": {
+        "mixedness_penalty": 0.0,
+        "vacancy_penalty": 0.0,
+        "concentration_penalty": 0.0
+      },
+      "delta_vitality": 12652.796921589961
+    }
+  ],
+  "config": {
+    "max_steps": 20,
+    "cost_alpha": 1.0,
+    "cost_beta": 0.5,
+    "action_space": {
+      "max_shops": 500,
+      "max_business_types": 20,
+      "max_total_units": 500
+    }
+  }
+}

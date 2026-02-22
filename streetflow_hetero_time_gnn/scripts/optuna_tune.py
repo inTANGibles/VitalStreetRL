@@ -91,6 +91,7 @@ def create_objective(
         lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
         hidden_channels = trial.suggest_categorical("hidden_channels", [32, 64, 128])
         weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
+        dropout = trial.suggest_float("dropout", 0.0, 0.4, step=0.1)
         n_epochs = trial.suggest_int("n_epochs", 40, 120, step=20)
 
         train_ds = SubgraphTimeSliceDataset(
@@ -113,6 +114,7 @@ def create_objective(
             in_channels=in_channels,
             hidden_channels=hidden_channels,
             out_channels=out_channels,
+            dropout=dropout,
         ).to(device_)
         optimizer = torch.optim.Adam(
             model.parameters(), lr=lr, weight_decay=weight_decay

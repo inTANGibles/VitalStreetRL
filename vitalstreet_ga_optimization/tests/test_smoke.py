@@ -103,10 +103,35 @@ def test_encoding_legal_actions():
     assert pop.shape == (3, 5, 3)
 
 
+def test_ga_nodewise_smoke():
+    """方案A：2 代 GA nodewise，不报错且 F 形状正确。"""
+    try:
+        from vitalga import run_nsga2
+    except ImportError:
+        return
+    state = _toy_state()
+    config = {
+        "encoding_type": "nodewise_action",
+        "B": 2,
+        "pm": 0.2,
+        "seed": 42,
+        "cost_alpha": 1.0,
+        "cost_beta": 0.5,
+        "reward": {"mu_violation": 1.0, "vitality_metrics": {}},
+        "transition": {"flow": {"buffer_distance": 10.0, "diversity_weight": 0.5, "weighted_sum_weight": 0.5}},
+        "action_space": {"max_shops": 100, "max_business_types": 20, "max_total_units": 100},
+    }
+    X, F, extra = run_nsga2(state, config, pop_size=4, n_gen=2, seed=42)
+    assert F.ndim == 2 and F.shape[1] == 3
+    assert len(F) > 0
+    assert "editable_nodes" in extra
+
+
 if __name__ == "__main__":
     test_state_copy()
     test_action_space_decode()
     test_transition_step()
     test_reward_and_evaluator()
     test_encoding_legal_actions()
+    test_ga_nodewise_smoke()
     print("All tests passed.")

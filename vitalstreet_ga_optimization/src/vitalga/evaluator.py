@@ -1,11 +1,28 @@
-"""执行动作序列、累计 reward、输出 final_vitality / violation 分解 / 操作统计"""
-from typing import Dict, Any, List, Tuple
+"""执行动作序列、累计 reward、输出 final_vitality / violation 分解 / 操作统计；方案A evaluate_genome 无时序。"""
+from typing import Dict, Any, List, Tuple, Callable, Optional
 import numpy as np
 from .state import WorldState
 from .action_space import ActionSpace, ActionType
 from .transition import Transition
 from .objective.reward import RewardCalculator
 from .objective.vitality_metrics import VitalityMetrics
+
+
+def evaluate_genome(
+    genome: np.ndarray,
+    initial_state: WorldState,
+    editable_nodes: List[Any],
+    decode_to_actions_fn: Callable[..., List],
+    apply_fn: Callable[[WorldState, List], WorldState],
+    objective_fn: Callable[[WorldState, WorldState, List], Dict[str, float]],
+    constraints_fn: Optional[Callable[[WorldState], bool]] = None,
+) -> Dict[str, float]:
+    """方案A：Genome -> 动作列表 -> 应用 -> 目标值。objective_fn(initial_state, state_after, actions) 便于用 initial 算 violation。"""
+    actions = decode_to_actions_fn(genome, editable_nodes)
+    state_after = apply_fn(initial_state, actions)
+    if constraints_fn is not None and not constraints_fn(state_after):
+        return {"final_vitality": -1e9, "violation_total": 1e9, "cost_proxy": 1e9}
+    return objective_fn(initial_state, state_after, actions)
 
 
 class Evaluator:
