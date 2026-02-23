@@ -5,9 +5,10 @@ import geopandas as gpd
 import numpy as np
 # 分别导入，避免一个导入失败影响另一个
 try:
-    from shapely.geometry import Polygon
+    from shapely.geometry import Polygon, Point
 except ImportError:
     Polygon = None  # 如果shapely未安装，Polygon将为None
+    Point = None
 
 # STRtree 在不同版本的shapely中位置不同，尝试多个位置
 STRtree = None
@@ -80,13 +81,15 @@ class SpaceUnitCollection:
         - Shop图层: 'shop_BusinessCategory' 或 'shop_BusinessCategory_protected'
           BusinessCategory包括: dining, retail, cultural, service, leisure, residential, supporting, undefined
         - 其他图层: 'public_space'（直接使用）
+        - 图块图层: 'block'（显示为灰色，与 shop、public_space 平行）
+        - 门图层: 'door'（与 shop、public_space、block 平行，用于后续判断 shop 与 public_space 的 edge 连通）
         
         Args:
             layer_name: DXF图层名称
             
         Returns:
             tuple: (unit_type, business_category, protected)
-                - unit_type: 'shop', 'public_space'
+                - unit_type: 'shop', 'public_space', 'block', 'door'
                 - business_category: BusinessCategory枚举值（shop类型）或None（非shop类型）
                 - protected: 是否受保护（bool）
         
@@ -97,6 +100,10 @@ class SpaceUnitCollection:
             ('shop', BusinessCategory.RETAIL, True)
             >>> parse_layer_name('public_space')
             ('public_space', None, False)
+            >>> parse_layer_name('block')
+            ('block', None, False)
+            >>> parse_layer_name('door')
+            ('door', None, False)
         """
         layer_name = layer_name.strip().lower()
         
@@ -140,6 +147,10 @@ class SpaceUnitCollection:
         # 检查其他单元类型
         elif layer_name == 'public_space':
             return ('public_space', None, False)
+        elif layer_name == 'block':
+            return ('block', None, False)
+        elif layer_name == 'door':
+            return ('door', None, False)
         
         # 未知图层类型，默认为shop_undefined
         else:
@@ -169,12 +180,24 @@ class SpaceUnitCollection:
             replaceable: 是否可替换（None时自动推断）
             enabled: 是否启用（None时自动推断：protected=True则enabled=False）
         """
-        if Polygon is None:
+        if Polygon is None or Point is None:
             raise ImportError("shapely库未安装，无法创建几何对象。请安装shapely: pip install shapely")
         
-        geometry = Polygon(coords)
+        coords = np.asarray(coords)
+        # door 图层为点数据：单点创建 Point 几何，面积为 0
+        if unit_type == 'door' and coords.size >= 2:
+            coords = np.atleast_2d(coords)
+            if coords.shape[0] == 1:
+                geometry = Point(coords[0, 0], coords[0, 1])
+                area = 0.0
+            else:
+                geometry = Polygon(coords)
+                area = geometry.area
+        else:
+            geometry = Polygon(coords)
+            area = geometry.area
+        
         uid = uuid.uuid4()
-        area = geometry.area
         
         # protected自动定义为enabled=False（不参与action）
         if enabled is None:
@@ -324,10 +347,158 @@ class SpaceUnitCollection:
     def get_public_spaces(self) -> gpd.GeoDataFrame:
         """获取公共空间（用于公共空间改造动作）"""
         return self.__unit_gdf[self.__unit_gdf['unit_type'] == 'public_space']
+
+    def get_doors(self) -> gpd.GeoDataFrame:
+        """获取门图层单元（与 shop/public_space/block 平行，用于后续创建 shop 与 public_space 的 edge 连通性）"""
+        return self.__unit_gdf[self.__unit_gdf['unit_type'] == 'door']
     
     def get_protected_units(self) -> gpd.GeoDataFrame:
         """获取保护单元（用于约束检查）"""
         return self.__unit_gdf[self.__unit_gdf['protected'] == True]
+    
+    # endregion
+    
+    # region 重叠去重
+    
+    def deduplicate_overlapping(
+        self,
+        overlap_ratio_threshold: float = 0.8,
+        priority_protected: bool = True,
+        verbose: bool = True
+    ) -> int:
+        """
+        去除几何重叠的重复图块，保证同一位置只保留一个单元。
+        当同一图块被导入为多个图层（如 shop_protected 与 shop_retail）时，按优先级保留一个。
+        
+        优先级（保留顺序）：(1) protected=True 优先 (2) unit_type: shop > public_space > block > door (3) 面积更大优先
+        
+        Args:
+            overlap_ratio_threshold: 重叠比例阈值，intersection.area / min(area1, area2) >= 此值视为同一位置
+            priority_protected: 是否优先保留 protected 单元（默认 True，即优先保留 shop_protected）
+            verbose: 是否打印去重信息
+            
+        Returns:
+            被移除的单元数量
+        """
+        gdf = self.__unit_gdf
+        if gdf.empty or len(gdf) < 2:
+            return 0
+        
+        # 只对多边形单元做重叠判断（排除 Point 类型的 door）
+        polygon_mask = gdf['geometry'].geom_type == 'Polygon'
+        polygon_df = gdf.loc[polygon_mask]
+        if len(polygon_df) < 2:
+            return 0
+        
+        # 构建 (uid, geometry, area, protected, unit_type) 列表
+        UNIT_TYPE_ORDER = {'shop': 0, 'public_space': 1, 'block': 2, 'door': 3}
+        rows = []
+        for idx, row in polygon_df.iterrows():
+            geom = row['geometry']
+            if geom is None or geom.is_empty:
+                continue
+            area = getattr(geom, 'area', 0) or 0
+            if area <= 0:
+                continue
+            rows.append({
+                'uid': row['uid'],
+                'geometry': geom,
+                'area': area,
+                'protected': bool(row.get('protected', False)),
+                'unit_type': row.get('unit_type', ''),
+                'type_rank': UNIT_TYPE_ORDER.get(row.get('unit_type'), 99),
+            })
+        
+        n = len(rows)
+        # 重叠关系图：uid -> set of uids that overlap with it
+        overlap_graph = {r['uid']: set() for r in rows}
+        uid_to_row = {r['uid']: r for r in rows}
+        
+        if STRtree is not None:
+            geoms = [r['geometry'] for r in rows]
+            tree = STRtree(geoms)
+            for i, r in enumerate(rows):
+                geom = r['geometry']
+                uid_i = r['uid']
+                area_i = r['area']
+                for j in tree.query(geom):
+                    if j == i:
+                        continue
+                    rj = rows[j]
+                    uid_j = rj['uid']
+                    area_j = rj['area']
+                    try:
+                        inter = geom.intersection(rj['geometry'])
+                        inter_area = getattr(inter, 'area', 0) or 0
+                        ratio = inter_area / min(area_i, area_j) if min(area_i, area_j) > 0 else 0
+                        if ratio >= overlap_ratio_threshold:
+                            overlap_graph[uid_i].add(uid_j)
+                            overlap_graph[uid_j].add(uid_i)
+                    except Exception:
+                        pass
+        else:
+            for i in range(n):
+                for j in range(i + 1, n):
+                    ri, rj = rows[i], rows[j]
+                    geom_i, geom_j = ri['geometry'], rj['geometry']
+                    area_i, area_j = ri['area'], rj['area']
+                    try:
+                        inter = geom_i.intersection(geom_j)
+                        inter_area = getattr(inter, 'area', 0) or 0
+                        ratio = inter_area / min(area_i, area_j) if min(area_i, area_j) > 0 else 0
+                        if ratio >= overlap_ratio_threshold:
+                            overlap_graph[ri['uid']].add(rj['uid'])
+                            overlap_graph[rj['uid']].add(ri['uid'])
+                    except Exception:
+                        pass
+        
+        # 连通分量：每个分量内为“同一位置”的多个单元
+        visited = set()
+        components = []
+        for r in rows:
+            uid = r['uid']
+            if uid in visited:
+                continue
+            stack = [uid]
+            comp = set()
+            while stack:
+                u = stack.pop()
+                if u in visited:
+                    continue
+                visited.add(u)
+                comp.add(u)
+                for v in overlap_graph[u]:
+                    if v not in visited:
+                        stack.append(v)
+            if comp:
+                components.append(comp)
+        
+        # 每个分量保留一个，其余删除
+        uids_to_remove = []
+        for comp in components:
+            if len(comp) <= 1:
+                continue
+            # 排序：优先 protected，再 unit_type (shop 优先)，再面积大
+            def keep_priority(uid):
+                row = uid_to_row[uid]
+                return (
+                    (0 if (priority_protected and row['protected']) else 1),
+                    row['type_rank'],
+                    -row['area'],
+                )
+            sorted_uids = sorted(comp, key=keep_priority)
+            keep_uid = sorted_uids[0]
+            for uid in sorted_uids[1:]:
+                uids_to_remove.append(uid)
+        
+        if not uids_to_remove:
+            return 0
+        
+        self.__unit_gdf = gdf[~gdf['uid'].isin(uids_to_remove)]
+        self.__uid = uuid.uuid4()
+        if verbose:
+            print(f'[去重] 移除 {len(uids_to_remove)} 个重叠图块，保留每处仅一个单元（优先 shop_protected）')
+        return len(uids_to_remove)
     
     # endregion
     

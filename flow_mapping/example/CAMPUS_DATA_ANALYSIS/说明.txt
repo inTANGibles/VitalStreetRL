@@ -1,4 +1,0 @@
-CAMPUSE _DATA_ANALYSIS工作区包含：
-1.原始数据文件final_data、device_axis、devices_shortest_path
-2.人群分布研究
-3.2D\3D轨迹图可视化，save尾缀文件用于导出数据集聚类

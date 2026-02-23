@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 from torch_geometric.data import Data
 
@@ -132,13 +133,15 @@ def build_graph_data(
     use_slot: bool = False,
     normalizer: Optional[Dict] = None,
     label_transform: str = "log1p",
+    flow_quantiles: Optional[List[float]] = None,
     device=None,
     shop_to_public: Optional[int] = None,
+    include_all_edges: bool = False,
 ) -> Tuple[Data, Optional[Dict]]:
     """
     构建同构 PyG Data：节点顺序 shop 0..n_shop-1, public n_shop..N-1。
-    - data.x [N, 11], data.edge_index [2, E], data.num_shop, data.num_public。
-    - 仅 public 有 data.y [n_public, 1], data.mask [n_public]；data.node_id [N]。
+    - data.x [N, 11], data.edge_index [2, E], data.edge_attr [E, 1]（open 0/1，若存在）。
+    - include_all_edges=True 或仅公共节点时：保留所有边（含 open=0），并写入 data.edge_attr。
     """
     rows, shop_ids, public_ids = _load_nodes(nodes_path)
     edges_raw = _load_edges(edges_path)
@@ -155,6 +158,8 @@ def build_graph_data(
         nid_to_type[shop_to_public] = "public"
     shop_set = set(shop_ids)
     public_set = set(public_ids)
+    if len(shop_set) == 0:
+        include_all_edges = True  # 仅公共空间时保留所有边并记录 open
 
     node_id_to_idx_shop = {nid: i for i, nid in enumerate(shop_ids)}
     node_id_to_idx_public = {nid: i for i, nid in enumerate(public_ids)}
@@ -180,45 +185,52 @@ def build_graph_data(
             return node_id_to_idx_shop[nid]
         return n_shop + node_id_to_idx_public[nid]
 
-    edge_src, edge_dst = [], []
+    edge_src, edge_dst, edge_open = [], [], []
     for e in edges_raw:
         u, v = e["src"], e["dst"]
         open_val = e.get("open", 1)
-        if open_val != 1 and (shop_to_public is None or (u != shop_to_public and v != shop_to_public)):
-            continue
         if u not in global_id_to_idx or v not in global_id_to_idx:
             continue
-        edge_src.append(global_idx(u))
-        edge_dst.append(global_idx(v))
-        edge_src.append(global_idx(v))
-        edge_dst.append(global_idx(u))
+        # 仅当非“全边模式”且 open=0 时跳过（保留与 shop 转换逻辑兼容）
+        if not include_all_edges and open_val != 1 and (shop_to_public is None or (u != shop_to_public and v != shop_to_public)):
+            continue
+        for (s, d) in [(u, v), (v, u)]:
+            edge_src.append(global_idx(s))
+            edge_dst.append(global_idx(d))
+            edge_open.append(float(open_val))
 
     key_ts = (day, slot_idx) if (use_slot and slot_idx is not None) else (day, hour)
     flow_dict = flows_map.get(key_ts, {})
     y_list = []
     mask_list = []
+    is_classification = label_transform == "remap_1_10" and flow_quantiles is not None
     for nid in public_ids:
         if nid in flow_dict:
             flow = flow_dict[nid]
             if label_transform == "log1p":
                 y_list.append(math.log1p(flow))
-            elif label_transform == "remap_1_10":
-                y_list.append(float(flow))
+            elif is_classification:
+                # 分位点 [10,20,...,90] 将 flow 映射到 0-9
+                cls_idx = int(np.digitize(flow, flow_quantiles, right=False))
+                cls_idx = min(cls_idx, 9)
+                y_list.append(cls_idx)
             else:
                 y_list.append(float(flow))
             mask_list.append(1)
         else:
-            y_list.append(0.0)
+            y_list.append(0 if is_classification else 0.0)
             mask_list.append(0)
 
     data = Data(
         x=x_cont,
         edge_index=torch.tensor([edge_src, edge_dst], dtype=torch.long) if edge_src else torch.empty(2, 0, dtype=torch.long),
     )
+    if edge_open:
+        data.edge_attr = torch.tensor(edge_open, dtype=torch.float32).unsqueeze(1)  # [E, 1]
     data.num_nodes = N
     data.num_shop = n_shop
     data.num_public = n_public
-    data.y = torch.tensor(y_list, dtype=torch.float32).unsqueeze(1)
+    data.y = torch.tensor(y_list, dtype=torch.long if is_classification else torch.float32).unsqueeze(1)
     data.mask = torch.tensor(mask_list, dtype=torch.bool)
     data.node_id = torch.tensor(shop_ids + public_ids, dtype=torch.long)
 

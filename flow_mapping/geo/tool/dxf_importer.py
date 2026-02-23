@@ -280,16 +280,37 @@ def dxf_to_spaceunit_collection(
     for entity in msp:
         stats['total_entities'] += 1
         
-        # 只处理多边形（LWPOLYLINE和POLYLINE）
+        layer_name = entity.dxf.layer
+        unit_type, business_category, protected = SpaceUnitCollection.parse_layer_name(layer_name)
         entity_type = entity.dxftype()
-        if entity_type not in ['LWPOLYLINE', 'POLYLINE']:
+        
+        # door 图层：点数据，处理 POINT 实体
+        if unit_type == 'door' and entity_type == 'POINT':
+            try:
+                loc = entity.dxf.location
+                x, y = float(loc.x), float(loc.y)
+                coords = np.array([[x, y]])
+                unit_gdf = SpaceUnitCollection._create_unit_by_coords(
+                    coords=coords,
+                    unit_type='door',
+                    business_type='UNDEFINED',
+                    business_category=None,
+                    protected=protected,
+                    replaceable=None,
+                    enabled=None
+                )
+                collection.add_space_unit(unit_gdf)
+                stats['processed'] += 1
+                stats['by_unit_type']['door'] = stats['by_unit_type'].get('door', 0) + 1
+            except Exception as e:
+                if verbose:
+                    print(f'创建 door 点失败 (图层: {layer_name}): {e}')
+                stats['skipped_invalid_geometry'] += 1
             continue
         
-        # 获取图层名称
-        layer_name = entity.dxf.layer
-        
-        # 解析图层名称
-        unit_type, business_category, protected = SpaceUnitCollection.parse_layer_name(layer_name)
+        # 其余图层：只处理多边形（LWPOLYLINE 和 POLYLINE）
+        if entity_type not in ['LWPOLYLINE', 'POLYLINE']:
+            continue
         
         # 检查是否是已知的单元类型（排除未知图层）
         if unit_type == 'shop' and business_category == BusinessCategory.UNDEFINED:
@@ -384,11 +405,20 @@ def dxf_to_spaceunit_collection(
             stats['skipped_invalid_geometry'] += 1
             continue
     
+    # 重叠去重：同一位置只保留一个图块（优先保留 shop_protected）
+    removed = collection.deduplicate_overlapping(
+        overlap_ratio_threshold=config.get('overlap_ratio_threshold', 0.8) if config else 0.8,
+        priority_protected=True,
+        verbose=verbose
+    )
+
     # 打印统计信息
     if verbose:
         print('\n=== DXF导入统计 ===')
         print(f'总实体数: {stats["total_entities"]}')
         print(f'成功处理: {stats["processed"]}')
+        if removed > 0:
+            print(f'重叠去重: 移除 {removed} 个重复图块')
         print(f'自动闭合: {stats["auto_closed"]}')  # 新增：自动闭合的数量
         print(f'跳过（非闭合）: {stats["skipped_non_closed"]}')
         print(f'跳过（无效几何）: {stats["skipped_invalid_geometry"]}')

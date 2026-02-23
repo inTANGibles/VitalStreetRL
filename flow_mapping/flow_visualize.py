@@ -122,6 +122,12 @@ def load_context(
         pid, nid = row["probe_id"], row["node_id"]
         if pd.notna(nid):
             probe_to_space[pid] = int(nid)
+    # 若坐标系不一致导致 sjoin 无匹配，则按探针 ID 顺序映射到空间索引 0,1,...
+    if not probe_to_space and devices_axis:
+        sorted_probes = sorted(devices_axis.keys(), key=lambda x: (int(x) if isinstance(x, (int, str)) and str(x).isdigit() else 0, x))
+        for i, pid in enumerate(sorted_probes):
+            if i < n_spaces:
+                probe_to_space[pid] = i
     spaces_with_probe = set(probe_to_space.values())
 
     class Ctx:
@@ -138,12 +144,62 @@ def load_context(
 
 
 # ---------- 单次 flow 计算与绘图 ----------
-INTERVAL_FLOW = 300  # 5 分钟
+INTERVAL_FLOW = 1800  # 30 min: 客流 = 每个探针点位在 30min 内 MAC 出现次数（按 slot 汇总）
 CMAP_FLOW = LinearSegmentedColormap.from_list(
     "ylorrd_0white",
     ["white", "#ffffcc", "#ffeda0", "#fed976", "#feb24c", "#fd8d3c", "#fc4e2a", "#e31a1c", "#bd0026"],
     N=256,
 )
+
+
+def _load_flow_records(flow_json_path: Path) -> list:
+    """Load flow records: supports both NDJSON (one JSON per line) and single JSON array."""
+    if not flow_json_path.exists():
+        return []
+    with open(flow_json_path, encoding="utf-8") as f:
+        first = f.read(1)
+        f.seek(0)
+        if first.strip() == "[":
+            return json.load(f)
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def compute_flow_only(ctx, flow_json_path: Path | str):
+    """
+    仅计算 flow_5min / flow_5min_direct，不绘图。用于批量汇总多日数据。
+    Returns:
+        gdf 带 flow_5min、flow_5min_direct 列。
+    """
+    flow_json_path = Path(flow_json_path)
+    gdf = ctx.gdf.copy()
+    is_public = ctx.is_public
+    n_spaces = ctx.n_spaces
+    probe_to_space = ctx.probe_to_space
+    get_path = ctx.get_path_between_spaces
+
+    if flow_json_path.exists():
+        records_flow = _load_flow_records(flow_json_path)
+    else:
+        records_flow = []
+
+    # 客流 = 每个探针点位（空间）在 30min 内 MAC 出现次数（每 slot 计数后按空间汇总）
+    flow_count = defaultdict(float)  # (space_id, slot_30min) -> count of records
+    for r in records_flow:
+        a = r.get("a")
+        t = r.get("t")
+        if a is None or t is None or a not in probe_to_space:
+            continue
+        space_id = probe_to_space[a]
+        slot = int(t) // INTERVAL_FLOW
+        flow_count[(space_id, slot)] += 1.0
+    flow_5min_direct_count = defaultdict(float)
+    for (space_id, _), cnt in flow_count.items():
+        flow_5min_direct_count[space_id] += cnt
+    flow_5min_count = dict(flow_5min_direct_count)  # 仅探针点位有值，与 direct 一致
+
+    gdf["flow_5min"] = [flow_5min_count.get(i, 0) for i in range(n_spaces)]
+    gdf["flow_5min_direct"] = [flow_5min_direct_count.get(i, 0) for i in range(n_spaces)]
+    return gdf
 
 
 def compute_flow_and_plot(
@@ -172,34 +228,22 @@ def compute_flow_and_plot(
     get_path = ctx.get_path_between_spaces
 
     if flow_json_path.exists():
-        with open(flow_json_path, encoding="utf-8") as f:
-            records_flow = [json.loads(line) for line in f if line.strip()]
+        records_flow = _load_flow_records(flow_json_path)
     else:
         records_flow = []
 
-    flow_5min_count = defaultdict(float)
-    flow_5min_direct_count = defaultdict(float)
-    for mac in set(tuple(r["m"]) for r in records_flow):
-        mac_records = [r for r in records_flow if tuple(r["m"]) == mac]
-        if len(mac_records) < 2:
+    flow_count = defaultdict(float)
+    for r in records_flow:
+        a, t = r.get("a"), r.get("t")
+        if a is None or t is None or a not in probe_to_space:
             continue
-        mac_records.sort(key=lambda r: r["t"])
-        for k in range(len(mac_records) - 1):
-            t1, t2 = mac_records[k]["t"], mac_records[k + 1]["t"]
-            a1, a2 = mac_records[k]["a"], mac_records[k + 1]["a"]
-            if a1 not in probe_to_space or a2 not in probe_to_space:
-                continue
-            s1, s2 = probe_to_space[a1], probe_to_space[a2]
-            flow_5min_direct_count[s1] += 1.0
-            flow_5min_direct_count[s2] += 1.0
-            path = get_path(s1, s2)
-            if not path:
-                continue
-            n_slots = max(1, int((t2 - t1) / INTERVAL_FLOW))
-            weight_per_node = n_slots / len(path)
-            for node_id in path:
-                if is_public[node_id]:
-                    flow_5min_count[node_id] += weight_per_node
+        space_id = probe_to_space[a]
+        slot = int(t) // INTERVAL_FLOW
+        flow_count[(space_id, slot)] += 1.0
+    flow_5min_direct_count = defaultdict(float)
+    for (space_id, _), cnt in flow_count.items():
+        flow_5min_direct_count[space_id] += cnt
+    flow_5min_count = dict(flow_5min_direct_count)
 
     gdf["flow_5min"] = [flow_5min_count.get(i, 0) for i in range(n_spaces)]
     gdf["flow_5min_direct"] = [flow_5min_direct_count.get(i, 0) for i in range(n_spaces)]
@@ -212,7 +256,7 @@ def compute_flow_and_plot(
     gdf[~is_public].plot(ax=ax1, facecolor="lightgray", edgecolor="gray", linewidth=0.3)
     gdf_public.plot(ax=ax1, column="flow_5min", legend=True, cmap=CMAP_FLOW, vmin=0, edgecolor="gray", linewidth=0.3)
     ax1.scatter(gdf_public["cx"], gdf_public["cy"], s=15, c="black", alpha=0.5)
-    ax1.set_title(f"还原客流（5min 颗粒 全路径）{suffix}")
+    ax1.set_title(f"Flow (30min, probe count){suffix}")
     ax1.set_aspect("equal")
     plt.tight_layout()
     if output_dir:
@@ -227,7 +271,7 @@ def compute_flow_and_plot(
     gdf[~is_public].plot(ax=ax2, facecolor="lightgray", edgecolor="gray", linewidth=0.3)
     gdf_public.plot(ax=ax2, column="flow_5min_direct", legend=True, cmap=CMAP_FLOW, vmin=0, edgecolor="gray", linewidth=0.3)
     ax2.scatter(gdf_public["cx"], gdf_public["cy"], s=15, c="black", alpha=0.5)
-    ax2.set_title(f"原始客流（仅探针起止点）{suffix}")
+    ax2.set_title(f"Flow (30min, probe count){suffix}")
     ax2.set_aspect("equal")
     plt.tight_layout()
     if output_dir:

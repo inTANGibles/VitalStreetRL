@@ -66,10 +66,12 @@ def plot_graph(
     center_node: Optional[int] = None,
     gdf: Optional[Any] = None,
     ax: Optional[plt.Axes] = None,
+    edge_color_by_open: bool = False,
 ) -> plt.Figure:
     """
     同构图可视化。center_node: 子图内中心节点局部索引，高亮显示。
     gdf: 与 nodes.csv 顺序一致时可用于底图与节点位置。
+    edge_color_by_open: 若 data 含 edge_attr（open 0/1），则 open=1 绿色、open=0 红色。
     """
     G = _data_to_nx(data)
     pos_dict = _pos_from_gdf_data(data, gdf) if gdf is not None else None
@@ -88,7 +90,24 @@ def plot_graph(
                 gdf_valid.plot(ax=ax, facecolor="lightgray", edgecolor="gray", alpha=0.5, linewidth=0.5, aspect="equal")
             except ValueError:
                 pass
-    nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.4)
+    if edge_color_by_open and hasattr(data, "edge_attr") and data.edge_attr is not None and data.edge_attr.numel() > 0:
+        ei = data.edge_index
+        open_vals = data.edge_attr.squeeze()
+        if open_vals.dim() == 0:
+            open_vals = open_vals.unsqueeze(0)
+        for j in range(ei.size(1)):
+            u, v = int(ei[0, j].item()), int(ei[1, j].item())
+            o = int(open_vals[j].item()) if j < open_vals.size(0) else 1
+            color = "green" if o == 1 else "red"
+            nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], ax=ax, alpha=0.7, edge_color=color, width=2)
+        from matplotlib.lines import Line2D
+        legend_edges = [
+            Line2D([0], [0], color="green", linewidth=2, label="open=1 (door on edge)"),
+            Line2D([0], [0], color="red", linewidth=2, label="open=0 (no door)"),
+        ]
+        ax.legend(handles=legend_edges, loc="upper left")
+    else:
+        nx.draw_networkx_edges(G, pos, ax=ax, alpha=0.4)
     nodelist = [n for n in G.nodes() if n != center_node]
     # shop 与 public_space 分开着色（需 gdf 与节点顺序一致且含 unit_type）
     if gdf is not None and len(gdf) == G.number_of_nodes() and "unit_type" in gdf.columns:

@@ -9,8 +9,9 @@ build_nodes_edges.py（仿照 VitalStreetRL/geo/tool/build_nodes_edges.py）
 - 中心性：closeness, betweenness
 - 输出列：node_id, node_type(shop|public), x, y, compactness, extensibility, concavity,
   fractal_degree, street_length, closeness, betweenness, main_axis_dir_deg
-- edges.csv: src, dst, open. 所有相邻图块的边都输出；open=1 当且仅当两端点中至少有一个为 public_space，
-  否则 open=0。构建图时仅使用 open=1 的边；GA 将 shop 改为 public 时可直接用同一 edge 集构建子图。
+- edges.csv: src, dst, open。open 定义：public–public=1；shop–shop=0；
+  public–shop：以 door 点为圆心做 1m buffer，若该 buffer 既在 shop 内又在 public_space 内（与两者均相交），
+  则判为该 shop 与 public 之间有 door，open=1。需可选 --door_geojson，--door_buffer_radius 默认 1（米）。
 """
 
 import argparse
@@ -36,6 +37,8 @@ def parse_args():
     p.add_argument("--adjacency_only", type=int, choices=[0, 1], default=0, help="1: 仅邻接；0: 可近邻补边")
     p.add_argument("--out_dir", required=True, help="输出目录，生成 nodes.csv、edges.csv")
     p.add_argument("--flows_csv", action="store_true", help="若设，从 properties.flow_prediction 生成 flows.csv（42 time slices）")
+    p.add_argument("--door_geojson", default=None, help="含 door 图层的 GeoJSON，用于 public–shop 边的 open 判断")
+    p.add_argument("--door_buffer_radius", type=float, default=1.0, help="door 点圆心 buffer 半径（米），buffer 同时在 shop 与 public_space 内则判为有门")
     return p.parse_args()
 
 
@@ -153,6 +156,38 @@ def build_knn_edges(gdf: gpd.GeoDataFrame, base_edges: set, d_thresh: float) -> 
     return edges
 
 
+def compute_shop_public_pairs_with_door(
+    door_points: list,
+    geometries: list,
+    shop_indices: list,
+    public_indices: list,
+    edges_set: set,
+    buffer_radius: float,
+) -> set:
+    """
+    以每个 door 点为圆心做 buffer_radius（米）的圆，若该 buffer 既与某 shop 相交又与某 public_space 相交，
+    则判为该 shop 与该 public 之间有 door。返回满足条件的 (min(u,v), max(u,v)) 边集合。
+    """
+    doors_between = set()
+    for pt in door_points:
+        if pt is None or (getattr(pt, "is_empty", False)):
+            continue
+        try:
+            buf = pt.buffer(buffer_radius)
+            if buf.is_empty:
+                continue
+        except Exception:
+            continue
+        shops_hit = [i for i in shop_indices if i < len(geometries) and geometries[i] is not None and not getattr(geometries[i], "is_empty", True) and geometries[i].intersects(buf)]
+        publics_hit = [j for j in public_indices if j < len(geometries) and geometries[j] is not None and not getattr(geometries[j], "is_empty", True) and geometries[j].intersects(buf)]
+        for i in shops_hit:
+            for j in publics_hit:
+                u, v = min(i, j), max(i, j)
+                if (u, v) in edges_set:
+                    doors_between.add((u, v))
+    return doors_between
+
+
 def main():
     args = parse_args()
     out_dir = Path(args.out_dir)
@@ -235,6 +270,43 @@ def main():
     # node_type: shop / public
     gdf["node_type"] = gdf["__geom_type__"].map(lambda t: "shop" if t == "shop" else "public")
     nid_to_type = gdf.set_index("node_id")["node_type"].to_dict()
+    geometries = gdf.geometry.values
+
+    # 门几何（点），用于 public–shop 边的 open 判断：圆心 1m buffer 同时在 shop 与 public 内则 open=1
+    door_geoms = []
+    if args.door_geojson and Path(args.door_geojson).exists():
+        gdf_door = gpd.read_file(args.door_geojson)
+        if gdf_door.crs != gdf.crs:
+            gdf_door = gdf_door.to_crs(gdf.crs)
+        if "unit_type" in gdf_door.columns:
+            gdf_door = gdf_door[gdf_door["unit_type"] == "door"]
+        door_geoms = gdf_door.geometry.tolist()
+
+    shop_indices = [i for i in range(n_nodes) if nid_to_type.get(i, "shop") == "shop"]
+    public_indices = [i for i in range(n_nodes) if nid_to_type.get(i, "public") == "public"]
+    doors_between = compute_shop_public_pairs_with_door(
+        door_geoms, geometries, shop_indices, public_indices, set(edges_list), args.door_buffer_radius
+    ) if door_geoms else set()
+
+    # edges.csv: src, dst, open。规则：public–public=1；shop–shop=0；
+    # shop–public：若 (u,v) 在 doors_between 中（该 door 的 1m buffer 同时在 shop 与 public 内）则 open=1
+    open_list = []
+    for (u, v) in edges_list:
+        tu, tv = nid_to_type.get(u, "shop"), nid_to_type.get(v, "shop")
+        if tu == "public" and tv == "public":
+            open_val = 1
+        elif tu == "shop" and tv == "shop":
+            open_val = 0
+        else:
+            # shop 与 public_space：若该边的 1m door buffer 同时在两者内则 open=1
+            open_val = 1 if (min(u, v), max(u, v)) in doors_between else 0
+        open_list.append(open_val)
+    edges_df = pd.DataFrame(
+        list(zip([e[0] for e in edges_list], [e[1] for e in edges_list], open_list)),
+        columns=["src", "dst", "open"],
+    )
+    edges_path = out_dir / "edges.csv"
+    edges_df.to_csv(edges_path, index=False)
 
     # nodes.csv（streetflow 所需列名）
     nodes_df = gdf[
@@ -245,18 +317,6 @@ def main():
     ].copy()
     nodes_path = out_dir / "nodes.csv"
     nodes_df.to_csv(nodes_path, index=False)
-
-    # edges.csv: src, dst, open. 所有相邻边都保留；open=1 当且仅当两端至少有一个为 public_space
-    open_list = []
-    for (u, v) in edges_list:
-        tu, tv = nid_to_type.get(u, "shop"), nid_to_type.get(v, "shop")
-        open_list.append(1 if (tu == "public" or tv == "public") else 0)
-    edges_df = pd.DataFrame(
-        list(zip([e[0] for e in edges_list], [e[1] for e in edges_list], open_list)),
-        columns=["src", "dst", "open"],
-    )
-    edges_path = out_dir / "edges.csv"
-    edges_df.to_csv(edges_path, index=False)
 
     print(f"节点数: {n_nodes}, 边数: {len(edges_list)}")
     print(f"nodes.csv -> {nodes_path}")
