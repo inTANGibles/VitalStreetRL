@@ -133,3 +133,37 @@ def build_2hop_subgraphs(data: Data, center_public_indices: List[int], num_shop:
         sub, _ = extract_2hop_subgraph(data, center_global)
         out.append((sub, center_idx))
     return out
+
+
+def extract_subgraph_with_shop_pseudo(
+    data: Data, center_global: int, num_hops: int = 1
+) -> Tuple[Data, int]:
+    """
+    以 center_global 为中心抽取子图。若中心为 shop，则用 1-hop 邻居中 public 节点的
+    平均 flow 作为伪标签（半监督）；若无 public 邻居则 mask=False。
+    返回 (subgraph, center_idx_in_subgraph)。
+    """
+    n_shop = getattr(data, "num_shop", 0)
+    if num_hops == 1:
+        keep = sorted(_get_1hop_neighbors(data, center_global))
+    else:
+        keep = sorted(_get_2hop_neighbors(data, center_global))
+    sub, center_local = _extract_subgraph_from_keep(data, keep, center_global)
+
+    if center_global < n_shop and hasattr(data, "y") and hasattr(data, "mask"):
+        public_idx_in_keep = [i for i in keep if i >= n_shop]
+        valid_y = []
+        for gidx in public_idx_in_keep:
+            pidx = gidx - n_shop
+            if data.mask[pidx].item():
+                valid_y.append(data.y[pidx].item())
+        if valid_y:
+            avg = sum(valid_y) / len(valid_y)
+            # 分类时 y 为 0-9，伪标签取众数/四舍五入到最近类别
+            if getattr(data.y, "dtype", None) in (torch.long, torch.int32, torch.int64):
+                cls_idx = max(0, min(9, int(round(avg))))
+                sub.y = torch.tensor([[cls_idx]], dtype=torch.long)
+            else:
+                sub.y = torch.tensor([[avg]], dtype=torch.float32)
+            sub.mask = torch.ones(1, dtype=torch.bool)
+    return sub, center_local

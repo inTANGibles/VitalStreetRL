@@ -1,14 +1,16 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-build_nodes_edges.py（仿照 VitalStreetRL/geo/tool/build_nodes_edges.py）
+build_nodes_edges.py
 
 从 street.geojson（或分开的 shop/public 图层）构建 nodes.csv 与 edges.csv：
 - 形状特征：compactness, concavity, fractal_degree, extensibility, main_axis_dir（最小外接矩形）
 - 边：多边形邻接（touches/overlaps/intersects），可选近邻补边
 - 中心性：closeness, betweenness
-- 输出列：node_id, node_type(shop|public), x, y, compactness, extensibility, concavity,
+- 输出列：node_id, node_type(字符串), x, y, compactness, extensibility, concavity,
   fractal_degree, street_length, closeness, betweenness, main_axis_dir_deg
+- node_type 取值：public_space, shop_cultural, shop_dining, shop_residential,
+  shop_retail, shop_undefined, block
 - edges.csv: src, dst, open。open 定义：public–public=1；shop–shop=0；
   public–shop：以 door 点为圆心做 1m buffer，若该 buffer 既在 shop 内又在 public_space 内（与两者均相交），
   则判为该 shop 与 public 之间有 door，open=1。需可选 --door_geojson，--door_buffer_radius 默认 1（米）。
@@ -138,6 +140,36 @@ def build_adjacency_edges(gdf: gpd.GeoDataFrame) -> set:
     return edges
 
 
+NODE_TYPE_PUBLIC = "public_space"
+
+
+def unit_to_node_type_name(unit_type: str, business_category, business_type) -> str:
+    """
+    将 GeoJSON 的 unit_type、business_category、business_type 映射为 node_type 字符串。
+    """
+    ut = (unit_type or "").strip().lower()
+    bc = (business_category or "").strip().lower() if business_category is not None else ""
+    bt = (business_type or "").strip().upper() if business_type is not None else ""
+
+    if ut == "public_space":
+        return "public_space"
+    if ut == "block":
+        return "block"
+    if ut == "shop":
+        if bc in ("cultural", "culture"):
+            return "shop_cultural"
+        if bc in ("dining", "dinning", "food", "restaurant"):
+            return "shop_dining"
+        if bc in ("residential", "residence"):
+            return "shop_residential"
+        if bc in ("retail", "commerce"):
+            return "shop_retail"
+        if not bc or bc in ("undefined", "null", "n/a", "none") or bt == "UNDEFINED":
+            return "shop_undefined"
+        return "shop_undefined"  # 未知业态归为 undefined
+    return "shop_undefined"  # 未知 unit_type 默认 shop_undefined
+
+
 def build_knn_edges(gdf: gpd.GeoDataFrame, base_edges: set, d_thresh: float) -> set:
     if d_thresh <= 0:
         return base_edges
@@ -198,26 +230,34 @@ def main():
         gdf_all = ensure_valid_geometries(gdf_all)
         if "unit_type" not in gdf_all.columns:
             gdf_all["unit_type"] = "shop"
-        shop_gdf = gdf_all[gdf_all["unit_type"] == "shop"].copy()
-        public_gdf = gdf_all[gdf_all["unit_type"] == "public_space"].copy()
-        if len(shop_gdf) == 0:
-            shop_gdf = gdf_all.copy()
-        if len(public_gdf) == 0:
-            public_gdf = gdf_all.head(0).copy()
-        shop_gdf["__geom_type__"] = "shop"
-        public_gdf["__geom_type__"] = "public"
-        gdf = pd.concat([shop_gdf, public_gdf], ignore_index=True)
+        if "business_category" not in gdf_all.columns:
+            gdf_all["business_category"] = None
+        if "business_type" not in gdf_all.columns:
+            gdf_all["business_type"] = None
+        # 仅保留多边形（排除 door 等点），且 unit_type 为 shop / public_space / block
+        poly_mask = gdf_all.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
+        type_mask = gdf_all["unit_type"].isin(["shop", "public_space", "block"])
+        gdf = gdf_all[poly_mask & type_mask].copy()
+        # 与 flow_mapping / GNN 一致：先 shop，再 public_space，再 block；public 的 node_id = n_shop..n_shop+n_public-1
+        shop_gdf = gdf[gdf["unit_type"] == "shop"].copy()
+        public_gdf = gdf[gdf["unit_type"] == "public_space"].copy()
+        block_gdf = gdf[gdf["unit_type"] == "block"].copy()
+        gdf = pd.concat([shop_gdf, public_gdf, block_gdf], ignore_index=True)
         gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs=gdf_all.crs)
     else:
         if not args.shop:
             raise ValueError("请指定 --geojson 或 --shop")
         shop_gdf = read_layer(Path(args.shop), args.layer_shop)
         shop_gdf = ensure_valid_geometries(shop_gdf)
-        shop_gdf["__geom_type__"] = "shop"
+        shop_gdf["unit_type"] = "shop"
+        shop_gdf["business_category"] = shop_gdf.get("business_category", None)
+        shop_gdf["business_type"] = shop_gdf.get("business_type", None)
         if args.public:
             public_gdf = read_layer(Path(args.public), args.layer_public)
             public_gdf = ensure_valid_geometries(public_gdf)
-            public_gdf["__geom_type__"] = "public"
+            public_gdf["unit_type"] = "public_space"
+            public_gdf["business_category"] = public_gdf.get("business_category", None)
+            public_gdf["business_type"] = public_gdf.get("business_type", None)
             if public_gdf.crs != shop_gdf.crs:
                 public_gdf = public_gdf.to_crs(shop_gdf.crs)
             gdf = pd.concat([shop_gdf, public_gdf], ignore_index=True)
@@ -267,12 +307,17 @@ def main():
     gdf["closeness"] = gdf["node_id"].map(closeness_dict).astype(float)
     gdf["betweenness"] = gdf["node_id"].map(betweenness_dict).astype(float)
 
-    # node_type: shop / public
-    gdf["node_type"] = gdf["__geom_type__"].map(lambda t: "shop" if t == "shop" else "public")
+    # node_type: 字符串（public_space, shop_cultural, shop_dining, ...）
+    gdf["node_type"] = gdf.apply(
+        lambda r: unit_to_node_type_name(
+            r.get("unit_type"), r.get("business_category"), r.get("business_type")
+        ),
+        axis=1,
+    )
     nid_to_type = gdf.set_index("node_id")["node_type"].to_dict()
     geometries = gdf.geometry.values
 
-    # 门几何（点），用于 public–shop 边的 open 判断：圆心 1m buffer 同时在 shop 与 public 内则 open=1
+    # 门几何（点），用于 public–shop 边的 open 判断：圆心 1m buffer 同时在 shop/public 与 public 内则 open=1
     door_geoms = []
     if args.door_geojson and Path(args.door_geojson).exists():
         gdf_door = gpd.read_file(args.door_geojson)
@@ -282,23 +327,24 @@ def main():
             gdf_door = gdf_door[gdf_door["unit_type"] == "door"]
         door_geoms = gdf_door.geometry.tolist()
 
-    shop_indices = [i for i in range(n_nodes) if nid_to_type.get(i, "shop") == "shop"]
-    public_indices = [i for i in range(n_nodes) if nid_to_type.get(i, "public") == "public"]
+    # is_public = (node_type == "public_space")
+    shop_indices = [i for i in range(n_nodes) if nid_to_type.get(i, "shop_undefined") != NODE_TYPE_PUBLIC]
+    public_indices = [i for i in range(n_nodes) if nid_to_type.get(i, "shop_undefined") == NODE_TYPE_PUBLIC]
     doors_between = compute_shop_public_pairs_with_door(
         door_geoms, geometries, shop_indices, public_indices, set(edges_list), args.door_buffer_radius
     ) if door_geoms else set()
 
-    # edges.csv: src, dst, open。规则：public–public=1；shop–shop=0；
-    # shop–public：若 (u,v) 在 doors_between 中（该 door 的 1m buffer 同时在 shop 与 public 内）则 open=1
+    # edges.csv: src, dst, open。规则：public_space–public_space=1；shop/block–shop/block=0；
+    # public_space–shop/block：若 (u,v) 在 doors_between 中则 open=1
     open_list = []
     for (u, v) in edges_list:
-        tu, tv = nid_to_type.get(u, "shop"), nid_to_type.get(v, "shop")
-        if tu == "public" and tv == "public":
+        tu = nid_to_type.get(u, "shop_undefined")
+        tv = nid_to_type.get(v, "shop_undefined")
+        if tu == NODE_TYPE_PUBLIC and tv == NODE_TYPE_PUBLIC:
             open_val = 1
-        elif tu == "shop" and tv == "shop":
+        elif tu != NODE_TYPE_PUBLIC and tv != NODE_TYPE_PUBLIC:
             open_val = 0
         else:
-            # shop 与 public_space：若该边的 1m door buffer 同时在两者内则 open=1
             open_val = 1 if (min(u, v), max(u, v)) in doors_between else 0
         open_list.append(open_val)
     edges_df = pd.DataFrame(
@@ -318,7 +364,10 @@ def main():
     nodes_path = out_dir / "nodes.csv"
     nodes_df.to_csv(nodes_path, index=False)
 
+    type_counts = gdf["node_type"].value_counts().sort_index()
+    type_str = ", ".join(f"{k}={v}" for k, v in type_counts.items())
     print(f"节点数: {n_nodes}, 边数: {len(edges_list)}")
+    print(f"node_type 分布: {type_str}")
     print(f"nodes.csv -> {nodes_path}")
     print(f"edges.csv -> {edges_path}")
 
@@ -328,7 +377,7 @@ def main():
         HOURS = list(range(12, 18))
         rows = []
         for idx in gdf.index:
-            if gdf.loc[idx, "node_type"] != "public":
+            if gdf.loc[idx, "node_type"] != "public_space":
                 continue
             node_id = int(gdf.loc[idx, "node_id"])
             flow_val = float(gdf.loc[idx, "flow_prediction"]) if pd.notna(gdf.loc[idx, "flow_prediction"]) else 0.0

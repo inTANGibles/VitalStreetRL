@@ -126,7 +126,8 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=_collate_batch_size1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SAGE(in_channels=11, hidden_channels=64, out_channels=1).to(device)
+    in_channels = train_ds[0].x.shape[1]
+    model = SAGE(in_channels=in_channels, hidden_channels=64, out_channels=1).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     best_val_mae = float("inf")

@@ -53,7 +53,8 @@ def predict(
     data = data.to(device)
     ckpt = torch.load(checkpoint_dir / "best.pt", map_location=device)
     hidden = int(ckpt.get("hidden_channels", 64))
-    model = SAGE(in_channels=11, hidden_channels=hidden, out_channels=1).to(device)
+    in_channels = data.x.shape[1]
+    model = SAGE(in_channels=in_channels, hidden_channels=hidden, out_channels=1).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     with torch.no_grad():
@@ -126,7 +127,8 @@ def predict_shop_converted_to_public(
     sub = sub.to(device)
     ckpt = torch.load(checkpoint_dir / "best.pt", map_location=device)
     hidden = int(ckpt.get("hidden_channels", 64))
-    model = SAGE(in_channels=11, hidden_channels=hidden, out_channels=1).to(device)
+    in_channels = sub.x.shape[1]
+    model = SAGE(in_channels=in_channels, hidden_channels=hidden, out_channels=1).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     with torch.no_grad():

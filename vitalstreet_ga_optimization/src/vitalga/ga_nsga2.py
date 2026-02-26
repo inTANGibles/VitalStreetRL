@@ -219,6 +219,28 @@ class NodewiseMutation(Mutation if PYMOO_AVAILABLE else object):
         return Y
 
 
+def _apply_flow_gnn_if_configured(state_after: WorldState, config: Dict[str, Any]) -> None:
+    """若 config 中 flow.source==gnn 且配置了 gnn_checkpoint_dir，则对 state_after 用 GNN 预测客流量并写回。"""
+    flow_cfg = config.get("transition", {}).get("flow", {})
+    if flow_cfg.get("source") != "gnn" or not flow_cfg.get("gnn_checkpoint_dir"):
+        return
+    try:
+        from pathlib import Path
+        from .flow_from_gnn import predict_flows_gnn
+        ckpt = Path(flow_cfg["gnn_checkpoint_dir"])
+        if ckpt.exists():
+            predict_flows_gnn(
+                state_after,
+                checkpoint_dir=ckpt,
+                normalizer_path=ckpt / flow_cfg.get("gnn_normalizer_name", "normalizer.json"),
+                streetflow_root=flow_cfg.get("gnn_streetflow_root") and Path(flow_cfg["gnn_streetflow_root"]),
+                num_hops=int(flow_cfg.get("gnn_num_hops", 2)),
+                checkpoint_name=flow_cfg.get("gnn_checkpoint_name", "best.pt"),
+            )
+    except Exception:
+        pass
+
+
 def _make_objective_fn_nodewise(evaluator: Evaluator, config: Dict[str, Any]):
     """返回 (initial_state, state_after, actions) -> dict 供 evaluate_genome 使用。"""
     from .action_space import ActionType
@@ -226,6 +248,7 @@ def _make_objective_fn_nodewise(evaluator: Evaluator, config: Dict[str, Any]):
     beta = config.get("cost_beta", 0.5)
     def objective_fn(initial_state, state_after, actions):
         evaluator.reward_calc.reset(initial_state)
+        _apply_flow_gnn_if_configured(state_after, config)
         n_change = sum(1 for a in actions if a.type == ActionType.CHANGE_BUSINESS)
         n_public = sum(1 for a in actions if a.type == ActionType.SHOP_TO_PUBLIC_SPACE)
         final_vitality = evaluator.reward_calc._compute_vitality(state_after)

@@ -51,10 +51,11 @@ class Transition:
         state.space_units.convert_to_public_space(action.target_id)
         state.graph = None
         flow_config = self.config.get('flow', {})
-        compute_flow_from_complexity(
-            collection=state.space_units,
-            buffer_distance=flow_config.get('buffer_distance', 10.0),
-            diversity_weight=flow_config.get('diversity_weight', 0.5),
-            weighted_sum_weight=flow_config.get('weighted_sum_weight', 0.5),
-        )
+        if flow_config.get('source') != 'gnn':
+            compute_flow_from_complexity(
+                collection=state.space_units,
+                buffer_distance=flow_config.get('buffer_distance', 10.0),
+                diversity_weight=flow_config.get('diversity_weight', 0.5),
+                weighted_sum_weight=flow_config.get('weighted_sum_weight', 0.5),
+            )
         return state, {'action': 'shop_to_public_space'}

@@ -2,8 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 从 0222_flow_mapped_public.geojson 生成 flows.csv，与 0222.geojson 生成的 nodes.csv 对应。
-通过几何匹配：0222 中每个 public 节点与 flow_mapped 中最近/重叠的 feature 匹配，取其 flow。
-nodes.csv/edges.csv 由 build_nodes_edges --geojson 0222.geojson 生成，node_id 为行号 0..N-1。
+通过几何匹配：0222 中每个 public 节点与 flow_mapped 中最近质心的 feature 匹配，取其 flow。
+若 flow_geojson 含 node_id 列，则 flows.csv 的 node_id 使用该列（与 flow_mapping.ipynb、nodes.csv 一致）；
+否则退化为 0222 合并 gdf 的行号。
+nodes.csv/edges.csv 由 build_nodes_edges --geojson 0222.geojson 生成，node_id 为 0222 行号 0..N-1。
 """
 import argparse
 import warnings
@@ -67,12 +69,14 @@ def main():
     if flow_col not in gdf_flow.columns:
         flow_col = "flow_5min" if "flow_5min" in gdf_flow.columns else "pass_count"
 
-    # 3. 为每个 0222 的 public 节点匹配 flow_mapped 中的 feature（质心最近）
-    flows_by_node = {}
+    # 3. 为每个 0222 的 public 节点匹配 flow_mapped 中的 feature（质心最近），用 flow_mapped 的 node_id 写入，与 flow_mapping.ipynb / nodes.csv 一致
+    use_flow_node_id = "node_id" in gdf_flow.columns
+    flows_by_node = {}  # node_id (from flow_mapped if present, else gdf row index) -> flow
     for idx in public_indices:
         geom = gdf.geometry.iloc[idx]
         if geom is None or (getattr(geom, "is_empty", False)):
-            flows_by_node[idx] = 0.0
+            if not use_flow_node_id:
+                flows_by_node[idx] = 0.0
             continue
         centroid = geom.centroid
         best_j = None
@@ -90,12 +94,40 @@ def main():
                 continue
         if best_j is not None:
             val = gdf_flow.loc[best_j, flow_col]
-            flows_by_node[idx] = float(val) if pd.notna(val) else 0.0
+            flow_val = float(val) if pd.notna(val) else 0.0
+            out_id = int(gdf_flow.loc[best_j, "node_id"]) if use_flow_node_id else idx
+            flows_by_node[out_id] = flow_val
         else:
-            flows_by_node[idx] = 0.0
+            if not use_flow_node_id:
+                flows_by_node[idx] = 0.0
 
-    # 4. 写出 flows.csv：仅 public 节点，单时刻 day=0, hour=0
-    rows = [{"node_id": node_id, "day": 0, "hour": 0, "flow": max(0.0, flow)} for node_id, flow in flows_by_node.items()]
+    # 4. 将原始 flow 映射到 [1,10]（非零），写出 flows.csv：仅 public 节点，单时刻 day=0, hour=0
+    raw_values = [flow for flow in flows_by_node.values() if flow > 0.0]
+    if raw_values:
+        fmin = float(min(raw_values))
+        fmax = float(max(raw_values))
+    else:
+        fmin, fmax = 0.0, 1.0
+
+    def to_1_10(flow: float) -> float:
+        """与 build_graph.py 中 linear_1_10 一致：非零 flow 线性映射到 [1,10]，零保持 0。"""
+        if flow <= 0.0:
+            return 0.0
+        if fmax <= fmin:
+            return 1.0
+        t = (flow - fmin) / (fmax - fmin)
+        t = max(0.0, min(1.0, t))
+        return 1.0 + t * 9.0
+
+    rows = [
+        {
+            "node_id": node_id,
+            "day": 0,
+            "hour": 0,
+            "flow": to_1_10(max(0.0, flow)),
+        }
+        for node_id, flow in flows_by_node.items()
+    ]
     flows_path = out_dir / "flows.csv"
     pd.DataFrame(rows).to_csv(flows_path, index=False)
     print(f"flows.csv -> {flows_path}（{len(rows)} 个 public 节点）")

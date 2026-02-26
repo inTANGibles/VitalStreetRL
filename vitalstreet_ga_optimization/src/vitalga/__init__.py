@@ -6,6 +6,7 @@ from .objective.reward import RewardCalculator
 from .objective.vitality_metrics import VitalityMetrics
 from .evaluator import Evaluator, evaluate_genome
 from .ga_nsga2 import run_nsga2
+from .flow_from_gnn import predict_flows_gnn, build_rows_and_edges_from_state
 
 __all__ = [
     "WorldState",
@@ -20,4 +21,6 @@ __all__ = [
     "Evaluator",
     "evaluate_genome",
     "run_nsga2",
+    "predict_flows_gnn",
+    "build_rows_and_edges_from_state",
 ]

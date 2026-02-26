@@ -82,6 +82,24 @@ class Evaluator:
                 n_shop_to_public += 1
             state = next_state
             step_count += 1
+        # 若配置为 GNN 预测客流量，在最终状态上为每个 public_space 构建子图并预测，再算活力
+        flow_cfg = self.config.get('transition', {}).get('flow', {})
+        if flow_cfg.get('source') == 'gnn' and flow_cfg.get('gnn_checkpoint_dir'):
+            try:
+                from pathlib import Path
+                from .flow_from_gnn import predict_flows_gnn
+                ckpt = Path(flow_cfg['gnn_checkpoint_dir'])
+                if ckpt.exists():
+                    predict_flows_gnn(
+                        state,
+                        checkpoint_dir=ckpt,
+                        normalizer_path=ckpt / flow_cfg.get('gnn_normalizer_name', 'normalizer.json'),
+                        streetflow_root=flow_cfg.get('gnn_streetflow_root') and Path(flow_cfg['gnn_streetflow_root']),
+                        num_hops=int(flow_cfg.get('gnn_num_hops', 2)),
+                        checkpoint_name=flow_cfg.get('gnn_checkpoint_name', 'best.pt'),
+                    )
+            except Exception:
+                pass
         final_vitality = self.reward_calc._compute_vitality(state)
         v_vec = self.vitality_metrics.compute(np.array([]), state)
         violation_total = self.reward_calc._compute_violation(state)

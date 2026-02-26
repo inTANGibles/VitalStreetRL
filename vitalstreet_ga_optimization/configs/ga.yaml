@@ -18,9 +18,16 @@ reward:
 
 transition:
   flow:
+    # 活力客流量来源: "complexity"（启发式）| "gnn"（子图+GNN 预测）
+    source: "complexity"
     buffer_distance: 10.0
     diversity_weight: 0.5
     weighted_sum_weight: 0.5
+    # 当 source 为 gnn 时使用（可为空，则仅 transition 不写 flow，evaluator 末尾用 GNN 写）
+    gnn_checkpoint_dir: null   # 例如: "../streetflow_hetero_time_gnn/checkpoints"
+    gnn_streetflow_root: null  # 例如: "../streetflow_hetero_time_gnn"
+    gnn_num_hops: 2
+    gnn_checkpoint_name: "best_gcn_semisupervised.pt"
 
 action_space:
   max_shops: 500
